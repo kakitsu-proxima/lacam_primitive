@@ -1,6 +1,6 @@
-# miniLaCAM
+# LaCAM + PIBT + primitives
 
-A dependency-free C++20 reference implementation of a deliberately small planning stack:
+A dependency-free C++17 reference implementation of a deliberately small planning stack:
 
 - integer grid states `[x_cell, y_cell, heading_bin]`
 - fixed-duration motion primitives
@@ -10,8 +10,6 @@ A dependency-free C++20 reference implementation of a deliberately small plannin
 - anytime weighted search (first solution, then strict-cost improvements)
 - YAML input/output through a small built-in parser
 - Jupyter/Pillow GIF visualization
-
-The code intentionally does **not** depend on dynoplan, dynobench, OMPL, FCL, Eigen, Boost, or yaml-cpp.
 
 ## Build
 
@@ -86,12 +84,10 @@ to stop at the first solution.
 
 ## Scope
 
-This is a clean reference baseline, not a drop-in replacement for all of db-LaCAM. It currently assumes:
+It currently assumes:
 
 - one rectangular robot model shared by all agents
 - a 2-D integer occupancy grid
 - global-axis translation primitives and in-place rotations
 - synchronized fixed-duration primitives
-- exact start and goal grid states
-
-These restrictions are deliberate: they make the collision semantics inspectable and remove the mixed continuous/discrete failure modes discussed in the original repository.
+- exact start and goal grid states`
