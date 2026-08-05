@@ -1,0 +1,42 @@
+grid:
+  cell_size: 0.10
+  origin: [0.0, 0.0]
+  width_cells: 30
+  height_cells: 20
+  heading_bins: 4
+  macro_dt: 0.20
+
+robot:
+  size: [0.18, 0.18]
+  max_linear_velocity: 1.0
+  max_angular_velocity: 8.0
+  collision_padding: 0.01
+
+primitives:
+  translation_cells: [1, 2]
+  rotation_bins: 1
+  include_wait: true
+
+search:
+  time_limit_ms: 1000
+  anytime: true
+  initial_weight: 3.0
+  minimum_weight: 1.0
+  weight_step: 0.5
+  objective: sum_of_costs
+  max_expansions: 200000
+  max_branching: 28
+  alternatives_per_agent: 6
+  random_seed: 7
+
+obstacles:
+  - rect: [0, 0, 30, 1]
+  - rect: [0, 19, 30, 1]
+  - rect: [0, 0, 1, 20]
+  - rect: [29, 0, 1, 20]
+
+agents:
+  - start: [4, 10, 0]
+    goal: [25, 10, 0]
+  - start: [15, 4, 1]
+    goal: [15, 16, 1]
