@@ -14,20 +14,22 @@ robot:
 
 primitives:
   #translation_cells: [1, 2, 3, 4, 5]
-  translation_cells: [1, 2, 3, 4, 5, 6, 7, 8]
+  translation_cells: [1, 2, 3, 4, 5, 6]
   rotation_bins: 1
+  #rotation_pivot_offsets_cells: [-5, 0, 5]
+  rotation_pivot_offsets_cells: [-5, 0, 5]
   include_wait: true
 
 search:
   time_limit_ms: 1000
   anytime: true
-  initial_weight: 5.0
+  initial_weight: 10.0
   minimum_weight: 1.0
   weight_step: 0.2
   objective: sum_of_costs
   max_expansions: 200000
   max_branching: 8
-  alternatives_per_agent: 5
+  alternatives_per_agent: 4
   random_seed: 7
 
 obstacles: []

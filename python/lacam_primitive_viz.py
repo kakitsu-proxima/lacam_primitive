@@ -85,30 +85,399 @@ def _shortest_heading_delta(start: float, goal: float) -> float:
     return math.remainder(goal - start, 2.0 * math.pi)
 
 
+def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Reconstruct primitive IDs in exactly the same order as the C++ PrimitiveTable.
+
+    The C++ order is:
+
+      wait
+      east/west/north/south for each sorted translation distance
+      rotate_ccw / rotate_cw for each sorted pivot offset
+    """
+    primitive_cfg = problem["primitives"]
+
+    translation_cells = sorted(
+        set(int(v) for v in primitive_cfg["translation_cells"])
+    )
+
+    rotation_bins = int(primitive_cfg["rotation_bins"])
+
+    pivot_offsets = sorted(
+        set(
+            int(v)
+            for v in primitive_cfg.get(
+                "rotation_pivot_offsets_cells",
+                [0],
+            )
+        )
+    )
+
+    include_wait = bool(primitive_cfg.get("include_wait", True))
+
+    catalog: list[dict[str, Any]] = []
+
+    if include_wait:
+        catalog.append(
+            {
+                "name": "wait",
+                "type": "wait",
+                "dx": 0,
+                "dy": 0,
+                "d_heading": 0,
+                "pivot_offset_cells": 0,
+            }
+        )
+
+    for distance in translation_cells:
+        catalog.append(
+            {
+                "name": f"east_{distance}",
+                "type": "translation",
+                "dx": distance,
+                "dy": 0,
+                "d_heading": 0,
+                "pivot_offset_cells": 0,
+            }
+        )
+
+        catalog.append(
+            {
+                "name": f"west_{distance}",
+                "type": "translation",
+                "dx": -distance,
+                "dy": 0,
+                "d_heading": 0,
+                "pivot_offset_cells": 0,
+            }
+        )
+
+        catalog.append(
+            {
+                "name": f"north_{distance}",
+                "type": "translation",
+                "dx": 0,
+                "dy": distance,
+                "d_heading": 0,
+                "pivot_offset_cells": 0,
+            }
+        )
+
+        catalog.append(
+            {
+                "name": f"south_{distance}",
+                "type": "translation",
+                "dx": 0,
+                "dy": -distance,
+                "d_heading": 0,
+                "pivot_offset_cells": 0,
+            }
+        )
+
+    for pivot_offset in pivot_offsets:
+        suffix = (
+            "center"
+            if pivot_offset == 0
+            else (
+                f"front_{pivot_offset}"
+                if pivot_offset > 0
+                else f"rear_{-pivot_offset}"
+            )
+        )
+
+        catalog.append(
+            {
+                "name": f"rotate_ccw_{suffix}",
+                "type": "pivot_rotation",
+                "dx": 0,
+                "dy": 0,
+                "d_heading": rotation_bins,
+                "pivot_offset_cells": pivot_offset,
+            }
+        )
+
+        catalog.append(
+            {
+                "name": f"rotate_cw_{suffix}",
+                "type": "pivot_rotation",
+                "dx": 0,
+                "dy": 0,
+                "d_heading": -rotation_bins,
+                "pivot_offset_cells": pivot_offset,
+            }
+        )
+
+    return catalog
+
+
+def _sample_primitive_segment(
+    start: np.ndarray,
+    goal: np.ndarray,
+    primitive: dict[str, Any],
+    alpha: float,
+    heading_bins: int,
+) -> np.ndarray:
+    """
+    Sample one primitive at alpha in [0, 1].
+
+    start and goal are:
+        [x_cell, y_cell, heading_bin]
+
+    Return:
+        [x_cell_float, y_cell_float, yaw_rad]
+    """
+    heading_step = 2.0 * math.pi / heading_bins
+
+    start_yaw = float(start[2]) * heading_step
+
+    primitive_type = primitive["type"]
+
+    # ------------------------------------------------------------
+    # Pivot rotation
+    # ------------------------------------------------------------
+    if primitive_type == "pivot_rotation":
+        d_heading = int(primitive["d_heading"])
+        yaw_delta = float(d_heading) * heading_step
+
+        yaw = start_yaw + alpha * yaw_delta
+
+        pivot_offset = float(
+            primitive["pivot_offset_cells"]
+        )
+
+        # Pivot is fixed in world coordinates during this primitive.
+        #
+        # Body +x axis:
+        #   [cos(start_yaw), sin(start_yaw)]
+        #
+        # Absolute pivot position:
+        pivot_x = (
+            float(start[0])
+            + pivot_offset * math.cos(start_yaw)
+        )
+
+        pivot_y = (
+            float(start[1])
+            + pivot_offset * math.sin(start_yaw)
+        )
+
+        # Rectangle center moves on a circular arc around the pivot.
+        x = (
+            pivot_x
+            - pivot_offset * math.cos(yaw)
+        )
+
+        y = (
+            pivot_y
+            - pivot_offset * math.sin(yaw)
+        )
+
+        return np.array(
+            [x, y, yaw],
+            dtype=float,
+        )
+
+    # ------------------------------------------------------------
+    # Wait or global-axis translation
+    # ------------------------------------------------------------
+
+    goal_yaw = float(goal[2]) * heading_step
+
+    yaw = (
+        start_yaw
+        + alpha
+        * _shortest_heading_delta(
+            start_yaw,
+            goal_yaw,
+        )
+    )
+
+    x = (
+        (1.0 - alpha) * float(start[0])
+        + alpha * float(goal[0])
+    )
+
+    y = (
+        (1.0 - alpha) * float(start[1])
+        + alpha * float(goal[1])
+    )
+
+    return np.array(
+        [x, y, yaw],
+        dtype=float,
+    )
+
+def _active_primitive_at_time(
+    plan: dict[str, Any],
+    time_value: float,
+    macro_dt: float,
+    primitive_catalog: list[dict[str, Any]],
+) -> tuple[int, dict[str, Any]] | None:
+    primitive_ids = plan["primitive_ids"]
+
+    if not primitive_ids:
+        return None
+
+    max_time = (
+        len(primitive_ids) * macro_dt
+    )
+
+    if time_value >= max_time:
+        return None
+
+    segment = int(
+        math.floor(
+            max(time_value, 0.0)
+            / macro_dt
+        )
+    )
+
+    segment = min(
+        segment,
+        len(primitive_ids) - 1,
+    )
+
+    primitive_id = int(
+        primitive_ids[segment]
+    )
+
+    return (
+        segment,
+        primitive_catalog[
+            primitive_id
+        ],
+    )
+
+
 def _interpolate_plan(
     states: list[list[int]],
+    primitive_ids: list[int],
+    primitive_catalog: list[dict[str, Any]],
     heading_bins: int,
     macro_dt: float,
     sample_times: np.ndarray,
 ) -> np.ndarray:
     values = np.asarray(states, dtype=float)
-    if values.ndim != 2 or values.shape[1] != 3:
-        raise ValueError("states must be [[x_cell, y_cell, heading_bin], ...]")
 
-    output = np.empty((len(sample_times), 3), dtype=float)
-    heading_step = 2.0 * math.pi / heading_bins
-    max_time = (len(values) - 1) * macro_dt
-    for index, time_value in enumerate(sample_times):
-        clamped = min(max(time_value, 0.0), max_time)
-        segment = min(int(clamped // macro_dt), len(values) - 2) if len(values) > 1 else 0
-        alpha = 0.0 if len(values) == 1 else (clamped - segment * macro_dt) / macro_dt
-        start = values[segment]
-        goal = values[min(segment + 1, len(values) - 1)]
-        start_yaw = start[2] * heading_step
-        goal_yaw = goal[2] * heading_step
-        output[index, 0] = (1.0 - alpha) * start[0] + alpha * goal[0]
-        output[index, 1] = (1.0 - alpha) * start[1] + alpha * goal[1]
-        output[index, 2] = start_yaw + alpha * _shortest_heading_delta(start_yaw, goal_yaw)
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError(
+            "states must be "
+            "[[x_cell, y_cell, heading_bin], ...]"
+        )
+
+    if len(values) == 0:
+        raise ValueError(
+            "states must not be empty"
+        )
+
+    if len(primitive_ids) != max(0, len(values) - 1):
+        raise ValueError(
+            "primitive_ids length must equal "
+            "len(states) - 1"
+        )
+
+    output = np.empty(
+        (len(sample_times), 3),
+        dtype=float,
+    )
+
+    heading_step = (
+        2.0 * math.pi / heading_bins
+    )
+
+    max_time = (
+        (len(values) - 1) * macro_dt
+    )
+
+    # Single-state plan.
+    if len(values) == 1:
+        yaw = values[0, 2] * heading_step
+
+        output[:, 0] = values[0, 0]
+        output[:, 1] = values[0, 1]
+        output[:, 2] = yaw
+
+        return output
+
+    for index, time_value in enumerate(
+        sample_times
+    ):
+        clamped = min(
+            max(float(time_value), 0.0),
+            max_time,
+        )
+
+        # Force the final sample exactly onto the final state.
+        if clamped >= max_time - 1e-12:
+            final = values[-1]
+
+            output[index, 0] = final[0]
+            output[index, 1] = final[1]
+            output[index, 2] = (
+                final[2] * heading_step
+            )
+
+            continue
+
+        segment = int(
+            math.floor(
+                clamped / macro_dt
+            )
+        )
+
+        segment = max(
+            0,
+            min(
+                segment,
+                len(values) - 2,
+            ),
+        )
+
+        segment_start_time = (
+            segment * macro_dt
+        )
+
+        alpha = (
+            clamped - segment_start_time
+        ) / macro_dt
+
+        alpha = min(
+            max(alpha, 0.0),
+            1.0,
+        )
+
+        primitive_id = int(
+            primitive_ids[segment]
+        )
+
+        if (
+            primitive_id < 0
+            or primitive_id
+            >= len(primitive_catalog)
+        ):
+            raise ValueError(
+                f"invalid primitive id "
+                f"{primitive_id}; "
+                f"catalog size="
+                f"{len(primitive_catalog)}"
+            )
+
+        primitive = (
+            primitive_catalog[
+                primitive_id
+            ]
+        )
+
+        output[index] = (
+            _sample_primitive_segment(
+                start=values[segment],
+                goal=values[segment + 1],
+                primitive=primitive,
+                alpha=alpha,
+                heading_bins=heading_bins,
+            )
+        )
+
     return output
 
 
@@ -159,8 +528,16 @@ def save_gif(
         target_sim_dt = playback_speed / fps
         frame_count = max(1, int(math.ceil(max_duration / target_sim_dt)))
         sample_times = np.linspace(0.0, max_duration, frame_count + 1)
+    primitive_catalog = (_build_primitive_catalog(problem))
+
     sampled = [
-        _interpolate_plan(plan["states"], heading_bins, macro_dt, sample_times)
+        _interpolate_plan(plan["states"], 
+                          primitive_ids=plan["primitive_ids"],
+                          primitive_catalog=primitive_catalog,
+                          heading_bins=heading_bins,
+                          macro_dt=macro_dt,
+                          sample_times=sample_times
+                          )
         for plan in plans
     ]
 
@@ -221,9 +598,17 @@ def save_gif(
 
     for index, plan in enumerate(plans):
         color = COLORS[index % len(COLORS)]
-        points = [tuple(cell_to_pixel(state[0], state[1])) for state in plan["states"]]
+
+        trajectory = sampled[index]
+
+        points = [
+            tuple(cell_to_pixel(pose[0], pose[1])
+                  )
+                  for pose in trajectory
+                  ]
         if len(points) >= 2:
             draw.line(points, fill=color + "99", width=3)
+
         start = plan["states"][0]
         goal = plan["states"][-1]
         start_yaw = start[2] * 2.0 * math.pi / heading_bins

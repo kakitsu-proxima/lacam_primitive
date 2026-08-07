@@ -199,18 +199,47 @@ std::size_t CandidateProvider::cache_index(
 double CandidateProvider::agent_heuristic(
     std::size_t agent,
     const State& state) const {
-  const State& goal = problem_.agents.at(agent).goal;
+  const State& goal =
+      problem_.agents.at(agent).goal;
+
   const int manhattan =
-      std::abs(state.x - goal.x) + std::abs(state.y - goal.y);
-  const int translation_steps =
-      (manhattan + primitives_.max_translation_cells() - 1) /
-      primitives_.max_translation_cells();
-  const int heading_distance = circular_heading_distance(
-      state.heading, goal.heading, problem_.grid.heading_bins);
+      std::abs(state.x - goal.x) +
+      std::abs(state.y - goal.y);
+
+  const int max_position_delta =
+      std::max(
+          1,
+          primitives_
+              .max_position_delta_cells());
+
+  const int position_steps =
+      (manhattan +
+       max_position_delta - 1) /
+      max_position_delta;
+
+  const int heading_distance =
+      circular_heading_distance(
+          state.heading,
+          goal.heading,
+          problem_.grid.heading_bins);
+
   const int rotation_steps =
-      (heading_distance + primitives_.max_rotation_bins() - 1) /
+      (heading_distance +
+       primitives_.max_rotation_bins() - 1) /
       primitives_.max_rotation_bins();
-  return static_cast<double>(translation_steps + rotation_steps);
+
+  if (primitives_
+          .has_coupled_rotation_translation()) {
+    // One pivot primitive may make progress in both position and heading simultaneously.
+    return static_cast<double>(
+        std::max(
+            position_steps,
+            rotation_steps));
+  }
+
+  // Preserve the stronger old heuristic when all rotation primitives rotate in place.
+  return static_cast<double>(
+      position_steps + rotation_steps);
 }
 
 std::vector<PrimitiveId> CandidateProvider::compute(
@@ -488,18 +517,45 @@ Planner::Planner(Problem problem)
 double Planner::single_agent_steps(
     std::size_t agent,
     const State& state) const {
-  const State& goal = problem_.agents[agent].goal;
+  const State& goal =
+      problem_.agents[agent].goal;
+
   const int manhattan =
-      std::abs(state.x - goal.x) + std::abs(state.y - goal.y);
-  const int translation_steps =
-      (manhattan + primitives_.max_translation_cells() - 1) /
-      primitives_.max_translation_cells();
-  const int heading_distance = circular_heading_distance(
-      state.heading, goal.heading, problem_.grid.heading_bins);
+      std::abs(state.x - goal.x) +
+      std::abs(state.y - goal.y);
+
+  const int max_position_delta =
+      std::max(
+          1,
+          primitives_
+              .max_position_delta_cells());
+
+  const int position_steps =
+      (manhattan +
+       max_position_delta - 1) /
+      max_position_delta;
+
+  const int heading_distance =
+      circular_heading_distance(
+          state.heading,
+          goal.heading,
+          problem_.grid.heading_bins);
+
   const int rotation_steps =
-      (heading_distance + primitives_.max_rotation_bins() - 1) /
+      (heading_distance +
+       primitives_.max_rotation_bins() - 1) /
       primitives_.max_rotation_bins();
-  return static_cast<double>(translation_steps + rotation_steps);
+
+  if (primitives_
+          .has_coupled_rotation_translation()) {
+    return static_cast<double>(
+        std::max(
+            position_steps,
+            rotation_steps));
+  }
+
+  return static_cast<double>(
+      position_steps + rotation_steps);
 }
 
 double Planner::heuristic(

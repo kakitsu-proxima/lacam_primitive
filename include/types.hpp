@@ -121,6 +121,16 @@ struct SearchOptions {
 struct PrimitiveConfig {
   std::vector<int> translation_cells{1};
   int rotation_bins = 1;
+
+  // Rotation axis position measured from the rectangle center along the robot's longitudinal (+x body) axis.
+  //
+  // Examples:
+  //   {0}       -> rotate about rectangle center
+  //   {-5,0,5}  -> rear / center / front pivots
+  //
+  // Unit: grid cells.
+  std::vector<int> rotation_pivot_offsets_cells{0};
+
   bool include_wait = true;
 };
 

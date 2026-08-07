@@ -144,6 +144,21 @@ Problem load_problem(const std::string& path) {
   }
   problem.primitive_config.rotation_bins =
       primitives.at("rotation_bins").as_int();
+
+  if (const Node* pivot = optional_child(primitives, "rotation_pivot_offsets_cells")) {
+    if (!pivot->is_sequence() || pivot->size() == 0) {
+      throw std::runtime_error(
+          "primitives.rotation_pivot_offsets_cells must be a non-empty sequence");
+    }
+    
+    problem.primitive_config.rotation_pivot_offsets_cells.clear();
+
+    for (std::size_t i = 0; i < pivot->size(); ++i) {
+      problem.primitive_config.rotation_pivot_offsets_cells.push_back(
+          pivot->at(i).as_int());
+    }
+  }
+
   if (const Node* wait = optional_child(primitives, "include_wait")) {
     problem.primitive_config.include_wait = wait->as_bool();
   }
