@@ -13,20 +13,21 @@ robot:
   collision_padding: 0.01
 
 primitives:
-  translation_cells: [1, 2, 3, 4, 5]
+  #translation_cells: [1, 2, 3, 4, 5]
+  translation_cells: [1, 2, 3, 4, 5, 6, 7, 8]
   rotation_bins: 1
   include_wait: true
 
 search:
   time_limit_ms: 1000
   anytime: true
-  initial_weight: 3.0
+  initial_weight: 5.0
   minimum_weight: 1.0
-  weight_step: 0.5
+  weight_step: 0.2
   objective: sum_of_costs
   max_expansions: 200000
-  max_branching: 28
-  alternatives_per_agent: 6
+  max_branching: 8
+  alternatives_per_agent: 5
   random_seed: 7
 
 obstacles: []
@@ -40,4 +41,5 @@ agents:
     goal: [48, 10, 1]
   - start: [48, 10, 1]
     goal: [9, 16, 0]
-    
+  - start: [9, 16, 0]
+    goal: [35, 10, 1]

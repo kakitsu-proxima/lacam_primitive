@@ -25,6 +25,9 @@ def run_planner(
     output_file: str | Path,
     *,
     time_limit_ms: float | None = None,
+    transition_cache: bool | None = None,
+    candidate_cache: bool | None = None,
+    ara_star: bool | None = None,
 ) -> Path:
     repo_root = Path(repo_root).resolve()
     executable = repo_root / "build" / "lacam_primitive"
@@ -44,6 +47,12 @@ def run_planner(
     ]
     if time_limit_ms is not None:
         command.extend(["--time-limit-ms", str(float(time_limit_ms))])
+    if transition_cache is not None:
+        command.extend(["--transition-cache", "on" if transition_cache else "off"])
+    if candidate_cache is not None:
+        command.extend(["--candidate-cache", "on" if candidate_cache else "off"])
+    if ara_star is not None:
+        command.extend(["--ara-star", "on" if ara_star else "off"])
 
     completed = subprocess.run(
         command,
@@ -55,7 +64,12 @@ def run_planner(
     )
     print(completed.stdout)
     if completed.returncode != 0:
-        raise RuntimeError(f"planner failed with exit code {completed.returncode}")
+        raise RuntimeError(
+            "planner failed\n"
+            f"exit code: {completed.returncode}\n"
+            f"command: {' '.join(command)}\n"
+            f"output:\n{completed.stdout}"
+        )
     return output_file
 
 
@@ -108,6 +122,7 @@ def save_gif(
     pixels_per_cell: int = 24,
     start_hold_seconds: float = 0.6,
     goal_hold_seconds: float = 1.2,
+    waypoint_only: bool = False,
 ) -> Path:
     if fps <= 0 or playback_speed <= 0 or pixels_per_cell <= 0:
         raise ValueError("fps, playback_speed, and pixels_per_cell must be positive")
@@ -133,8 +148,17 @@ def save_gif(
     plans = solution["plans"]
     max_steps = max(len(plan["states"]) - 1 for plan in plans)
     max_duration = max_steps * macro_dt
-    frame_dt_world = playback_speed / fps
-    sample_times = np.arange(0.0, max_duration + 0.5 * frame_dt_world, frame_dt_world)
+    if waypoint_only:
+        # One frame per planner waypoint: 0, macro_dt, 2*macro_dt, ...
+        sample_times = np.arange(max_steps + 1, dtype=float) * macro_dt
+    elif max_duration <= 0.0:
+        sample_times = np.array([0.0], dtype=float)
+    else:
+        # Smoothly interpolate between planner waypoints. linspace is used so
+        # the final displayed simulation time is exactly max_duration.
+        target_sim_dt = playback_speed / fps
+        frame_count = max(1, int(math.ceil(max_duration / target_sim_dt)))
+        sample_times = np.linspace(0.0, max_duration, frame_count + 1)
     sampled = [
         _interpolate_plan(plan["states"], heading_bins, macro_dt, sample_times)
         for plan in plans
@@ -177,12 +201,15 @@ def save_gif(
         width=2,
     )
 
+    grid_color = "#353131"
+    grid_width = 1
+
     for x in range(width + 1):
         px = margin_left + x * pixels_per_cell
-        draw.line((px, margin_top, px, margin_top + plot_height), fill="#e4e4e0", width=1)
+        draw.line((px, margin_top, px, margin_top + plot_height), fill=grid_color, width=grid_width)
     for y in range(height + 1):
         py = margin_top + y * pixels_per_cell
-        draw.line((margin_left, py, margin_left + plot_width, py), fill="#e4e4e0", width=1)
+        draw.line((margin_left, py, margin_left + plot_width, py), fill=grid_color, width=grid_width)
 
     for obstacle in problem.get("obstacles", []):
         x, y, w, h = (int(value) for value in obstacle["rect"])
@@ -212,7 +239,12 @@ def save_gif(
         frame_draw = ImageDraw.Draw(frame)
         frame_draw.text(
             (canvas_size[0] / 2, 28),
-            f"LaCAM + PIBT + primitive   t={time_value:.2f} s   cost={solution['cost']:.3g}",
+            (
+                f"LaCAM + PIBT   sim t={time_value:.2f} s   "
+                f"dt={macro_dt:.2f} s   "
+                f"step={time_value / macro_dt:.2f}/{max_steps}   "
+                f"cost={solution['cost']:.3g}"
+            ),
             fill="#111111",
             font=title_font,
             anchor="mm",
@@ -230,7 +262,11 @@ def save_gif(
             frame_draw.text(tuple(center), str(agent_index), fill="white", font=label_font, anchor="mm")
         frames.append(frame.convert("P", palette=Image.Palette.ADAPTIVE))
 
-    duration_ms = max(10, round(1000 / fps))
+    if len(sample_times) >= 2:
+        real_frame_seconds = (sample_times[1] - sample_times[0]) / playback_speed
+        duration_ms = max(10, round(1000 * real_frame_seconds))
+    else:
+        duration_ms = max(10, round(1000 / fps))
     durations = [duration_ms] * len(frames)
     durations[0] += round(start_hold_seconds * 1000)
     durations[-1] += round(goal_hold_seconds * 1000)
@@ -253,9 +289,13 @@ def plan_and_animate(
     output_directory: str | Path,
     *,
     time_limit_ms: float | None = None,
+    transition_cache: bool | None = None,
+    candidate_cache: bool | None = None,
+    ara_star: bool | None = None,
     fps: int = 20,
     playback_speed: float = 1.0,
     pixels_per_cell: int = 24,
+    waypoint_only: bool = False,
 ) -> dict[str, Path]:
     output_directory = Path(output_directory).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -266,6 +306,9 @@ def plan_and_animate(
         problem_file,
         solution_file,
         time_limit_ms=time_limit_ms,
+        transition_cache=transition_cache,
+        candidate_cache=candidate_cache,
+        ara_star=ara_star,
     )
     save_gif(
         problem_file,
@@ -274,5 +317,60 @@ def plan_and_animate(
         fps=fps,
         playback_speed=playback_speed,
         pixels_per_cell=pixels_per_cell,
+        waypoint_only=waypoint_only,
     )
     return {"solution": solution_file, "animation": gif_file}
+
+
+def benchmark_modes(
+    repo_root: str | Path,
+    problem_file: str | Path,
+    output_directory: str | Path,
+    *,
+    time_limit_ms: float = 1000.0,
+    include_repeated_weighted: bool = True,
+) -> list[dict[str, Any]]:
+    """Run cache/search mode combinations and return solution timing rows."""
+    output_directory = Path(output_directory).resolve()
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    ara_modes = (True, False) if include_repeated_weighted else (True,)
+    rows: list[dict[str, Any]] = []
+    for transition_cache in (True, False):
+        for candidate_cache in (True, False):
+            for ara_star in ara_modes:
+                label = (
+                    f"transition_{'on' if transition_cache else 'off'}__"
+                    f"candidate_{'on' if candidate_cache else 'off'}__"
+                    f"ara_{'on' if ara_star else 'off'}"
+                )
+                solution_file = output_directory / f"{label}.yaml"
+                run_planner(
+                    repo_root,
+                    problem_file,
+                    solution_file,
+                    time_limit_ms=time_limit_ms,
+                    transition_cache=transition_cache,
+                    candidate_cache=candidate_cache,
+                    ara_star=ara_star,
+                )
+                with solution_file.open(encoding="utf-8") as stream:
+                    solution = yaml.safe_load(stream)
+                timing = solution.get("timing", {})
+                runtime = solution.get("runtime", {})
+                rows.append(
+                    {
+                        "transition_cache": transition_cache,
+                        "candidate_cache": candidate_cache,
+                        "ara_star": ara_star,
+                        "success": bool(solution.get("success")),
+                        "cost": solution.get("cost"),
+                        "static_precompute_ms": timing.get("static_precompute_ms"),
+                        "query_precompute_ms": timing.get("query_precompute_ms"),
+                        "search_ms": timing.get("search_ms"),
+                        "warm_request_ms": timing.get("warm_request_ms"),
+                        "cold_total_ms": timing.get("cold_total_ms"),
+                        "expanded_nodes": runtime.get("expanded_nodes"),
+                    }
+                )
+    return rows

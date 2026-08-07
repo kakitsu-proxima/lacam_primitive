@@ -13,6 +13,18 @@
 #include <utility>
 #include <vector>
 
+#ifndef LACAM_PRIMITIVE_DEFAULT_TRANSITION_CACHE
+#define LACAM_PRIMITIVE_DEFAULT_TRANSITION_CACHE 1
+#endif
+
+#ifndef LACAM_PRIMITIVE_DEFAULT_CANDIDATE_CACHE
+#define LACAM_PRIMITIVE_DEFAULT_CANDIDATE_CACHE 1
+#endif
+
+#ifndef LACAM_PRIMITIVE_DEFAULT_ARA_STAR
+#define LACAM_PRIMITIVE_DEFAULT_ARA_STAR 1
+#endif
+
 namespace lacam_primitive {
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -39,8 +51,10 @@ struct State {
 struct StateHash {
   std::size_t operator()(const State& state) const noexcept {
     std::size_t seed = static_cast<std::size_t>(state.x) * 0x9e3779b185ebca87ULL;
-    seed ^= static_cast<std::size_t>(state.y) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
-    seed ^= static_cast<std::size_t>(state.heading) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+    seed ^= static_cast<std::size_t>(state.y) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+    seed ^= static_cast<std::size_t>(state.heading) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
     return seed;
   }
 };
@@ -98,6 +112,10 @@ struct SearchOptions {
   std::size_t max_branching = 24;
   std::size_t alternatives_per_agent = 5;
   std::uint32_t random_seed = 7;
+
+  bool use_transition_cache = LACAM_PRIMITIVE_DEFAULT_TRANSITION_CACHE != 0;
+  bool use_candidate_cache = LACAM_PRIMITIVE_DEFAULT_CANDIDATE_CACHE != 0;
+  bool use_ara_star = LACAM_PRIMITIVE_DEFAULT_ARA_STAR != 0;
 };
 
 struct PrimitiveConfig {
@@ -135,18 +153,57 @@ struct AgentPlan {
 };
 
 struct Improvement {
+  // Search-clock time. Precomputation is deliberately excluded.
   double elapsed_ms = 0.0;
   double cost = std::numeric_limits<double>::infinity();
   double weight = 1.0;
 };
 
+struct RuntimeStats {
+  // Reusable when map, robot and primitive settings do not change.
+  double primitive_collision_precompute_ms = 0.0;
+  double transition_cache_precompute_ms = 0.0;
+  double static_precompute_ms = 0.0;
+
+  // Depends on the current agents/goals.
+  double query_precompute_ms = 0.0;
+  double candidate_cache_precompute_ms = 0.0;
+
+  // Starts immediately before graph search.
+  double search_ms = 0.0;
+
+  // static_precompute_ms + query_precompute_ms + search_ms.
+  double cold_total_ms = 0.0;
+
+  // query_precompute_ms + search_ms. This approximates request latency when
+  // static map/robot caches are retained by a persistent planner process.
+  double warm_request_ms = 0.0;
+
+  bool transition_cache_enabled = false;
+  bool candidate_cache_enabled = false;
+  bool ara_star_enabled = false;
+
+  std::uint64_t transition_lookups = 0;
+  std::uint64_t transition_cache_hits = 0;
+  std::uint64_t transition_on_demand_computations = 0;
+
+  std::uint64_t candidate_lookups = 0;
+  std::uint64_t candidate_cache_hits = 0;
+  std::uint64_t candidate_on_demand_computations = 0;
+
+  std::uint64_t expanded_nodes = 0;
+};
+
 struct Solution {
   bool success = false;
+
+  // Kept for compatibility. It is identical to stats.search_ms.
   double elapsed_ms = 0.0;
   double cost = std::numeric_limits<double>::infinity();
   std::string objective;
   std::vector<AgentPlan> plans;
   std::vector<Improvement> improvements;
+  RuntimeStats stats;
 };
 
 class Deadline {
