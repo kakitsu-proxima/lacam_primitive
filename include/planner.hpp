@@ -32,7 +32,7 @@ class CollisionChecker {
  private:
   const Problem& problem_;
   const PrimitiveTable& primitives_;
-  StaticGrid static_grid_;
+  std::vector<ConvexPolygon> obstacle_polygons_;
 };
 
 struct TransitionEntry {
@@ -225,8 +225,7 @@ class Planner {
     std::vector<std::vector<PrimitiveId>> primitives;
   };
 
-  // Declared first so construction time also includes PrimitiveTable and
-  // CollisionChecker construction.
+  // Declared first so construction time also includes PrimitiveTable and CollisionChecker construction.
   std::chrono::steady_clock::time_point construction_start_;
   Problem problem_;
   PrimitiveTable primitives_;

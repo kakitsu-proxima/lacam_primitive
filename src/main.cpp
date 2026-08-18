@@ -17,7 +17,9 @@ void print_usage(const char* executable) {
       << "       [--time-limit-ms 100]\n"
       << "       [--transition-cache on|off]\n"
       << "       [--candidate-cache on|off]\n"
-      << "       [--ara-star on|off]\n";
+      << "       [--ara-star on|off]\n"
+      << "       [--collision-mode time_indexed|whole_step]\n"
+      << "       [--max-boundary-travel-per-interval-m 0.005]\n";
 }
 
 bool parse_on_off(const std::string& value, const std::string& option_name) {
@@ -41,6 +43,8 @@ int main(int argc, char** argv) {
     std::optional<bool> override_transition_cache;
     std::optional<bool> override_candidate_cache;
     std::optional<bool> override_ara_star;
+    std::optional<std::string> override_collision_mode;
+    std::optional<double> override_max_boundary_travel;
 
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
@@ -58,6 +62,12 @@ int main(int argc, char** argv) {
             parse_on_off(argv[++i], argument);
       } else if (argument == "--ara-star" && i + 1 < argc) {
         override_ara_star = parse_on_off(argv[++i], argument);
+      } else if (argument == "--collision-mode" && i + 1 < argc) {
+        override_collision_mode = argv[++i];
+      } else if (argument ==
+                     "--max-boundary-travel-per-interval-m" &&
+                 i + 1 < argc) {
+        override_max_boundary_travel = std::stod(argv[++i]);
       } else if (argument == "--help") {
         print_usage(argv[0]);
         return 0;
@@ -85,6 +95,22 @@ int main(int argc, char** argv) {
     if (override_ara_star.has_value()) {
       problem.search.use_ara_star = *override_ara_star;
     }
+    if (override_collision_mode.has_value()) {
+      if (*override_collision_mode != "time_indexed" &&
+          *override_collision_mode != "whole_step") {
+        throw std::invalid_argument(
+            "--collision-mode expects time_indexed or whole_step");
+      }
+      problem.search.collision_mode = *override_collision_mode;
+    }
+    if (override_max_boundary_travel.has_value()) {
+      if (*override_max_boundary_travel <= 0.0) {
+        throw std::invalid_argument(
+            "--max-boundary-travel-per-interval-m must be positive");
+      }
+      problem.search.max_boundary_travel_per_interval_m =
+          *override_max_boundary_travel;
+    }
 
     lacam_primitive::Planner planner(problem);
     const lacam_primitive::Solution solution = planner.solve();
@@ -109,6 +135,11 @@ int main(int argc, char** argv) {
         << " candidate_cache="
         << on_off(solution.stats.candidate_cache_enabled)
         << " ara_star=" << on_off(solution.stats.ara_star_enabled)
+        << " collision_mode=" << solution.stats.collision_mode
+        << " max_boundary_travel_per_interval_m="
+        << solution.stats.max_boundary_travel_per_interval_m
+        << " collision_intervals="
+        << solution.stats.collision_interval_count
         << "\n"
         << "cache stats: transition "
         << solution.stats.transition_cache_hits << "/"

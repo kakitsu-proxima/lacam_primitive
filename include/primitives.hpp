@@ -31,7 +31,15 @@ struct PrimitiveVariant {
   // for pivot rotations, delta.x / delta.y depend on start heading.
   State delta;
 
-  std::vector<CellMask> interval_masks;
+  // A conservative metric swept region for each common time interval.
+  // Coordinates are relative to the primitive's integer start anchor and are
+  // measured in grid cells; the construction tolerance itself is specified in
+  // metres so its physical accuracy is independent of planning cell_size.
+  std::vector<ConvexPolygon> interval_polygons;
+
+  // Convex hull of every interval polygon. Comparing this once per pair is
+  // faster, but deliberately ignores when within the step an area is used.
+  ConvexPolygon whole_step_polygon;
 };
 
 class PrimitiveTable {

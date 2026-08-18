@@ -29,6 +29,7 @@ namespace lacam_primitive {
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
 
+// for the rotation
 inline int positive_mod(int value, int modulus) {
   const int result = value % modulus;
   return result < 0 ? result + modulus : result;
@@ -72,13 +73,22 @@ struct JointStateHash {
 };
 
 struct GridSpec {
-  double cell_size = 0.1;
-  double origin_x = 0.0;
-  double origin_y = 0.0;
+  // can be changed by yaml file
+  double cell_size = 0.1; // meter
+  double origin_x = 0.0; // meter
+  double origin_y = 0.0; // meter
   int width_cells = 1;
   int height_cells = 1;
   int heading_bins = 4;
   double macro_dt = 0.2;
+
+  // Physical workspace boundary. When omitted by legacy inputs, collision
+  // checking falls back to the historical outer half-cell boundary.
+  bool has_metric_bounds = false;
+  double min_x_m = 0.0;
+  double min_y_m = 0.0;
+  double max_x_m = 0.0;
+  double max_y_m = 0.0;
 
   [[nodiscard]] double heading_step() const {
     return 2.0 * kPi / static_cast<double>(heading_bins);
@@ -90,6 +100,34 @@ struct GridSpec {
 
   [[nodiscard]] double world_y(int y) const {
     return origin_y + static_cast<double>(y) * cell_size;
+  }
+
+  [[nodiscard]] double cell_x(double world_x_m) const {
+    return (world_x_m - origin_x) / cell_size;
+  }
+
+  [[nodiscard]] double cell_y(double world_y_m) const {
+    return (world_y_m - origin_y) / cell_size;
+  }
+
+  [[nodiscard]] double collision_min_x_cells() const {
+    return has_metric_bounds ? cell_x(min_x_m) : -0.5;
+  }
+
+  [[nodiscard]] double collision_min_y_cells() const {
+    return has_metric_bounds ? cell_y(min_y_m) : -0.5;
+  }
+
+  [[nodiscard]] double collision_max_x_cells() const {
+    return has_metric_bounds
+               ? cell_x(max_x_m)
+               : static_cast<double>(width_cells) - 0.5;
+  }
+
+  [[nodiscard]] double collision_max_y_cells() const {
+    return has_metric_bounds
+               ? cell_y(max_y_m)
+               : static_cast<double>(height_cells) - 0.5;
   }
 };
 
@@ -112,6 +150,14 @@ struct SearchOptions {
   std::size_t max_branching = 24;
   std::size_t alternatives_per_agent = 5;
   std::uint32_t random_seed = 7;
+
+  // time_indexed: compare swept polygons from matching sub-intervals.
+  // whole_step: compare one conservative polygon for the entire primitive.
+  std::string collision_mode = "time_indexed";
+
+  // Maximum physical travel of any robot-boundary point in one internal
+  // collision interval. Smaller values produce more, tighter intervals.
+  double max_boundary_travel_per_interval_m = 0.005;
 
   bool use_transition_cache = LACAM_PRIMITIVE_DEFAULT_TRANSITION_CACHE != 0;
   bool use_candidate_cache = LACAM_PRIMITIVE_DEFAULT_CANDIDATE_CACHE != 0;
@@ -141,6 +187,13 @@ struct ObstacleRect {
   int height = 0;
 };
 
+struct MetricObstacleRect {
+  double x_m = 0.0;
+  double y_m = 0.0;
+  double width_m = 0.0;
+  double height_m = 0.0;
+};
+
 struct Agent {
   State start;
   State goal;
@@ -152,6 +205,7 @@ struct Problem {
   PrimitiveConfig primitive_config;
   SearchOptions search;
   std::vector<ObstacleRect> obstacles;
+  std::vector<MetricObstacleRect> metric_obstacles;
   std::vector<Agent> agents;
 };
 
@@ -163,10 +217,10 @@ struct AgentPlan {
 };
 
 struct Improvement {
-  // Search-clock time. Precomputation is deliberately excluded.
   double elapsed_ms = 0.0;
   double cost = std::numeric_limits<double>::infinity();
   double weight = 1.0;
+  std::vector<AgentPlan> plans;
 };
 
 struct RuntimeStats {
@@ -192,6 +246,9 @@ struct RuntimeStats {
   bool transition_cache_enabled = false;
   bool candidate_cache_enabled = false;
   bool ara_star_enabled = false;
+  std::string collision_mode = "time_indexed";
+  double max_boundary_travel_per_interval_m = 0.005;
+  std::size_t collision_interval_count = 0;
 
   std::uint64_t transition_lookups = 0;
   std::uint64_t transition_cache_hits = 0;

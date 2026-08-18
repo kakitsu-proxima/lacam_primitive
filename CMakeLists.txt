@@ -58,5 +58,9 @@ include(CTest)
 if(BUILD_TESTING)
   add_executable(lacam_primitive_tests tests/test_main.cpp)
   target_link_libraries(lacam_primitive_tests PRIVATE lacam_primitive_core)
+  target_compile_definitions(
+    lacam_primitive_tests
+    PRIVATE LACAM_PRIMITIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
   add_test(NAME lacam_primitive_tests COMMAND lacam_primitive_tests)
 endif()

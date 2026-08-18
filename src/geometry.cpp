@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -71,6 +72,7 @@ CellMask rasterize_oriented_rectangle(
 
   const double c = std::cos(yaw);
   const double s = std::sin(yaw);
+  // basis unit vectors
   const double u_x = c;
   const double u_y = s;
   const double v_x = -s;
@@ -183,6 +185,199 @@ bool shifted_intersects(
     }
   }
   return false;
+}
+
+std::vector<Point2> oriented_rectangle_corners(
+    double center_x_cells,
+    double center_y_cells,
+    double yaw,
+    double half_length_cells,
+    double half_width_cells) {
+  if (half_length_cells <= 0.0 || half_width_cells <= 0.0) {
+    throw std::invalid_argument("rectangle half extents must be positive");
+  }
+
+  const double c = std::cos(yaw);
+  const double s = std::sin(yaw);
+  const Point2 longitudinal{c * half_length_cells, s * half_length_cells};
+  const Point2 lateral{-s * half_width_cells, c * half_width_cells};
+
+  return {
+      Point2{center_x_cells + longitudinal.x + lateral.x,
+             center_y_cells + longitudinal.y + lateral.y},
+      Point2{center_x_cells - longitudinal.x + lateral.x,
+             center_y_cells - longitudinal.y + lateral.y},
+      Point2{center_x_cells - longitudinal.x - lateral.x,
+             center_y_cells - longitudinal.y - lateral.y},
+      Point2{center_x_cells + longitudinal.x - lateral.x,
+             center_y_cells + longitudinal.y - lateral.y},
+  };
+}
+
+namespace {
+
+double cross(const Point2& origin, const Point2& a, const Point2& b) {
+  return (a.x - origin.x) * (b.y - origin.y) -
+         (a.y - origin.y) * (b.x - origin.x);
+}
+
+bool separated_on_polygon_axes(
+    const ConvexPolygon& axes_from,
+    double axes_shift_x,
+    double axes_shift_y,
+    const ConvexPolygon& left,
+    double left_shift_x,
+    double left_shift_y,
+    const ConvexPolygon& right,
+    double right_shift_x,
+    double right_shift_y) {
+  constexpr double epsilon = 1e-12;
+  for (std::size_t i = 0; i < axes_from.vertices.size(); ++i) {
+    const Point2& a = axes_from.vertices[i];
+    const Point2& b =
+        axes_from.vertices[(i + 1) % axes_from.vertices.size()];
+    const double edge_x = b.x - a.x;
+    const double edge_y = b.y - a.y;
+    const double axis_x = -edge_y;
+    const double axis_y = edge_x;
+
+    double left_min = std::numeric_limits<double>::infinity();
+    double left_max = -std::numeric_limits<double>::infinity();
+    for (const Point2& point : left.vertices) {
+      const double projection =
+          (point.x + left_shift_x) * axis_x +
+          (point.y + left_shift_y) * axis_y;
+      left_min = std::min(left_min, projection);
+      left_max = std::max(left_max, projection);
+    }
+
+    double right_min = std::numeric_limits<double>::infinity();
+    double right_max = -std::numeric_limits<double>::infinity();
+    for (const Point2& point : right.vertices) {
+      const double projection =
+          (point.x + right_shift_x) * axis_x +
+          (point.y + right_shift_y) * axis_y;
+      right_min = std::min(right_min, projection);
+      right_max = std::max(right_max, projection);
+    }
+
+    // Touching footprints count as a collision. axes_shift is intentionally
+    // unused in the projection: translating the edge does not change its
+    // normal direction.
+    (void)axes_shift_x;
+    (void)axes_shift_y;
+    if (left_max < right_min - epsilon ||
+        right_max < left_min - epsilon) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ConvexPolygon rectangle_polygon(
+    double min_x,
+    double min_y,
+    double max_x,
+    double max_y) {
+  return ConvexPolygon{{
+      Point2{min_x, min_y},
+      Point2{max_x, min_y},
+      Point2{max_x, max_y},
+      Point2{min_x, max_y},
+  }};
+}
+
+}  // namespace
+
+ConvexPolygon convex_hull(std::vector<Point2> points) {
+  if (points.size() < 3) {
+    throw std::invalid_argument("convex hull needs at least three points");
+  }
+
+  std::sort(points.begin(), points.end(), [](const Point2& left, const Point2& right) {
+    if (left.x != right.x) return left.x < right.x;
+    return left.y < right.y;
+  });
+  points.erase(
+      std::unique(points.begin(), points.end(), [](const Point2& left, const Point2& right) {
+        return left.x == right.x && left.y == right.y;
+      }),
+      points.end());
+
+  std::vector<Point2> hull;
+  hull.reserve(points.size() * 2);
+  for (const Point2& point : points) {
+    while (hull.size() >= 2 &&
+           cross(hull[hull.size() - 2], hull.back(), point) <= 0.0) {
+      hull.pop_back();
+    }
+    hull.push_back(point);
+  }
+
+  const std::size_t lower_size = hull.size();
+  for (auto iterator = points.rbegin() + 1; iterator != points.rend(); ++iterator) {
+    while (hull.size() > lower_size &&
+           cross(hull[hull.size() - 2], hull.back(), *iterator) <= 0.0) {
+      hull.pop_back();
+    }
+    hull.push_back(*iterator);
+  }
+  hull.pop_back();
+  return ConvexPolygon{std::move(hull)};
+}
+
+bool shifted_polygons_intersect(
+    const ConvexPolygon& left,
+    double left_x,
+    double left_y,
+    const ConvexPolygon& right,
+    double right_x,
+    double right_y) {
+  if (left.vertices.size() < 3 || right.vertices.size() < 3) {
+    throw std::invalid_argument("polygon needs at least three vertices");
+  }
+  return !separated_on_polygon_axes(
+             left, left_x, left_y,
+             left, left_x, left_y,
+             right, right_x, right_y) &&
+         !separated_on_polygon_axes(
+             right, right_x, right_y,
+             left, left_x, left_y,
+             right, right_x, right_y);
+}
+
+bool shifted_polygon_inside_bounds(
+    const ConvexPolygon& polygon,
+    double shift_x,
+    double shift_y,
+    double min_x,
+    double min_y,
+    double max_x,
+    double max_y) {
+  constexpr double epsilon = 1e-12;
+  for (const Point2& point : polygon.vertices) {
+    const double x = point.x + shift_x;
+    const double y = point.y + shift_y;
+    if (x < min_x - epsilon || x > max_x + epsilon ||
+        y < min_y - epsilon || y > max_y + epsilon) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool shifted_polygon_intersects_rect(
+    const ConvexPolygon& polygon,
+    double shift_x,
+    double shift_y,
+    double min_x,
+    double min_y,
+    double max_x,
+    double max_y) {
+  const ConvexPolygon rectangle =
+      rectangle_polygon(min_x, min_y, max_x, max_y);
+  return shifted_polygons_intersect(
+      polygon, shift_x, shift_y, rectangle, 0.0, 0.0);
 }
 
 }  // namespace lacam_primitive

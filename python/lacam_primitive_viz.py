@@ -28,6 +28,8 @@ def run_planner(
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
+    collision_mode: str | None = None,
+    max_boundary_travel_per_interval_m: float | None = None,
 ) -> Path:
     repo_root = Path(repo_root).resolve()
     executable = repo_root / "build" / "lacam_primitive"
@@ -53,6 +55,23 @@ def run_planner(
         command.extend(["--candidate-cache", "on" if candidate_cache else "off"])
     if ara_star is not None:
         command.extend(["--ara-star", "on" if ara_star else "off"])
+    if collision_mode is not None:
+        if collision_mode not in {"time_indexed", "whole_step"}:
+            raise ValueError(
+                "collision_mode must be 'time_indexed' or 'whole_step'"
+            )
+        command.extend(["--collision-mode", collision_mode])
+    if max_boundary_travel_per_interval_m is not None:
+        if max_boundary_travel_per_interval_m <= 0:
+            raise ValueError(
+                "max_boundary_travel_per_interval_m must be positive"
+            )
+        command.extend(
+            [
+                "--max-boundary-travel-per-interval-m",
+                str(float(max_boundary_travel_per_interval_m)),
+            ]
+        )
 
     completed = subprocess.run(
         command,
@@ -85,6 +104,30 @@ def _shortest_heading_delta(start: float, goal: float) -> float:
     return math.remainder(goal - start, 2.0 * math.pi)
 
 
+def _exact_cells(value_m: float, cell_size: float, name: str) -> int:
+    cells = float(value_m) / cell_size
+    rounded = round(cells)
+    if not math.isclose(cells, rounded, abs_tol=1e-8):
+        raise ValueError(
+            f"{name}={value_m} m is not representable on the "
+            f"{cell_size} m integer lattice"
+        )
+    return int(rounded)
+
+
+def _grid_dimensions(grid: dict[str, Any]) -> tuple[int, int]:
+    if "width_cells" in grid and "height_cells" in grid:
+        return int(grid["width_cells"]), int(grid["height_cells"])
+    bounds = grid.get("bounds_m")
+    if bounds is None:
+        raise ValueError("grid needs width_cells/height_cells or bounds_m")
+    cell_size = float(grid["cell_size"])
+    return (
+        _exact_cells(float(bounds[2]) - float(bounds[0]), cell_size, "grid width"),
+        _exact_cells(float(bounds[3]) - float(bounds[1]), cell_size, "grid height"),
+    )
+
+
 def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Reconstruct primitive IDs in exactly the same order as the C++ PrimitiveTable.
@@ -97,21 +140,38 @@ def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
     """
     primitive_cfg = problem["primitives"]
 
-    translation_cells = sorted(
-        set(int(v) for v in primitive_cfg["translation_cells"])
-    )
+    cell_size = float(problem["grid"]["cell_size"])
+    if "translation_distances_m" in primitive_cfg:
+        translation_cells = sorted(
+            set(
+                _exact_cells(float(v), cell_size, "translation_distances_m[]")
+                for v in primitive_cfg["translation_distances_m"]
+            )
+        )
+    else:
+        translation_cells = sorted(
+            set(int(v) for v in primitive_cfg["translation_cells"])
+        )
 
     rotation_bins = int(primitive_cfg["rotation_bins"])
 
-    pivot_offsets = sorted(
-        set(
-            int(v)
-            for v in primitive_cfg.get(
-                "rotation_pivot_offsets_cells",
-                [0],
+    if "rotation_pivot_offsets_m" in primitive_cfg:
+        pivot_offsets = sorted(
+            set(
+                _exact_cells(float(v), cell_size, "rotation_pivot_offsets_m[]")
+                for v in primitive_cfg["rotation_pivot_offsets_m"]
             )
         )
-    )
+    else:
+        pivot_offsets = sorted(
+            set(
+                int(v)
+                for v in primitive_cfg.get(
+                    "rotation_pivot_offsets_cells",
+                    [0],
+                )
+            )
+        )
 
     include_wait = bool(primitive_cfg.get("include_wait", True))
 
@@ -481,6 +541,37 @@ def _interpolate_plan(
     return output
 
 
+def _select_solution_variant(
+    solution: dict[str, Any],
+    solution_index: int | None,
+) -> dict[str, Any]:
+    """Return the final solution or one recorded anytime incumbent."""
+    if solution_index is None:
+        return {
+            "cost": solution["cost"],
+            "plans": solution["plans"],
+            "elapsed_ms": solution.get("elapsed_ms"),
+            "weight": None,
+        }
+
+    improvements = solution.get("improvements", [])
+    if not improvements:
+        raise ValueError("solution file does not contain anytime improvements")
+    index = solution_index if solution_index >= 0 else len(improvements) + solution_index
+    if index < 0 or index >= len(improvements):
+        raise IndexError(
+            f"solution_index {solution_index} is outside "
+            f"the {len(improvements)} recorded improvements"
+        )
+    variant = improvements[index]
+    if "plans" not in variant:
+        raise ValueError(
+            "this solution file only records improvement costs; rerun the updated planner "
+            "to visualize earlier incumbents"
+        )
+    return variant
+
+
 def save_gif(
     problem_file: str | Path,
     solution_file: str | Path,
@@ -488,13 +579,17 @@ def save_gif(
     *,
     fps: int = 20,
     playback_speed: float = 1.0,
-    pixels_per_cell: int = 24,
+    pixels_per_meter: float = 240.0,
+    pixels_per_cell: float | None = None,
     start_hold_seconds: float = 0.6,
     goal_hold_seconds: float = 1.2,
     waypoint_only: bool = False,
+    solution_index: int | None = None,
 ) -> Path:
-    if fps <= 0 or playback_speed <= 0 or pixels_per_cell <= 0:
-        raise ValueError("fps, playback_speed, and pixels_per_cell must be positive")
+    if fps <= 0 or playback_speed <= 0 or pixels_per_meter <= 0:
+        raise ValueError("fps, playback_speed, and pixels_per_meter must be positive")
+    if pixels_per_cell is not None and pixels_per_cell <= 0:
+        raise ValueError("pixels_per_cell must be positive when specified")
 
     with Path(problem_file).open(encoding="utf-8") as stream:
         problem: dict[str, Any] = yaml.safe_load(stream)
@@ -504,17 +599,28 @@ def save_gif(
     if not solution.get("success"):
         raise ValueError("solution file does not contain a successful plan")
 
+    variant = _select_solution_variant(solution, solution_index)
+
     grid = problem["grid"]
     robot = problem["robot"]
-    width = int(grid["width_cells"])
-    height = int(grid["height_cells"])
+    width, height = _grid_dimensions(grid)
     cell_size = float(grid["cell_size"])
+    origin_x, origin_y = (float(v) for v in grid.get("origin", [0.0, 0.0]))
+    if "bounds_m" in grid:
+        min_x_m, min_y_m, max_x_m, max_y_m = (
+            float(v) for v in grid["bounds_m"]
+        )
+    else:
+        min_x_m = origin_x - 0.5 * cell_size
+        min_y_m = origin_y - 0.5 * cell_size
+        max_x_m = origin_x + (width - 0.5) * cell_size
+        max_y_m = origin_y + (height - 0.5) * cell_size
     heading_bins = int(grid["heading_bins"])
     macro_dt = float(grid["macro_dt"])
-    robot_length_cells = float(robot["size"][0]) / cell_size
-    robot_width_cells = float(robot["size"][1]) / cell_size
+    robot_length_m = float(robot["size"][0])
+    robot_width_m = float(robot["size"][1])
 
-    plans = solution["plans"]
+    plans = variant["plans"]
     max_steps = max(len(plan["states"]) - 1 for plan in plans)
     max_duration = max_steps * macro_dt
     if waypoint_only:
@@ -541,27 +647,38 @@ def save_gif(
         for plan in plans
     ]
 
+    # Physical-size scaling is the default: grids describing the same metric
+    # workspace get the same canvas dimensions regardless of cell_size.
+    # pixels_per_cell remains as an explicit backwards-compatible override.
+    effective_pixels_per_meter = (
+        float(pixels_per_cell) / cell_size
+        if pixels_per_cell is not None
+        else float(pixels_per_meter)
+    )
+    pixel_scale = cell_size * effective_pixels_per_meter
     margin_left, margin_top, margin_right, margin_bottom = 58, 58, 24, 36
-    plot_width = width * pixels_per_cell
-    plot_height = height * pixels_per_cell
+    plot_width = max(1, round((max_x_m - min_x_m) * effective_pixels_per_meter))
+    plot_height = max(1, round((max_y_m - min_y_m) * effective_pixels_per_meter))
     canvas_size = (
         margin_left + plot_width + margin_right,
         margin_top + plot_height + margin_bottom,
     )
 
     def cell_to_pixel(x: float, y: float) -> np.ndarray:
+        world_x = origin_x + x * cell_size
+        world_y = origin_y + y * cell_size
         return np.array(
             [
-                margin_left + (x + 0.5) * pixels_per_cell,
-                margin_top + (height - y - 0.5) * pixels_per_cell,
+                margin_left + (world_x - min_x_m) * effective_pixels_per_meter,
+                margin_top + (max_y_m - world_y) * effective_pixels_per_meter,
             ],
             dtype=float,
         )
 
     def corners(x: float, y: float, yaw: float) -> list[tuple[float, float]]:
         center = cell_to_pixel(x, y)
-        half_length = 0.5 * robot_length_cells * pixels_per_cell
-        half_width = 0.5 * robot_width_cells * pixels_per_cell
+        half_length = 0.5 * robot_length_m * effective_pixels_per_meter
+        half_width = 0.5 * robot_width_m * effective_pixels_per_meter
         longitudinal = np.array([math.cos(yaw), -math.sin(yaw)])
         lateral = np.array([math.sin(yaw), math.cos(yaw)])
         return [
@@ -581,19 +698,26 @@ def save_gif(
     grid_color = "#353131"
     grid_width = 1
 
-    for x in range(width + 1):
-        px = margin_left + x * pixels_per_cell
+    for x in range(width):
+        px = cell_to_pixel(float(x), 0.0)[0]
         draw.line((px, margin_top, px, margin_top + plot_height), fill=grid_color, width=grid_width)
-    for y in range(height + 1):
-        py = margin_top + y * pixels_per_cell
+    for y in range(height):
+        py = cell_to_pixel(0.0, float(y))[1]
         draw.line((margin_left, py, margin_left + plot_width, py), fill=grid_color, width=grid_width)
 
     for obstacle in problem.get("obstacles", []):
-        x, y, w, h = (int(value) for value in obstacle["rect"])
-        left = margin_left + x * pixels_per_cell
-        right = margin_left + (x + w) * pixels_per_cell
-        top = margin_top + (height - y - h) * pixels_per_cell
-        bottom = margin_top + (height - y) * pixels_per_cell
+        if "rect_m" in obstacle:
+            x_m, y_m, w_m, h_m = (float(value) for value in obstacle["rect_m"])
+        else:
+            x, y, w, h = (int(value) for value in obstacle["rect"])
+            x_m = origin_x + (x - 0.5) * cell_size
+            y_m = origin_y + (y - 0.5) * cell_size
+            w_m = w * cell_size
+            h_m = h * cell_size
+        left = margin_left + (x_m - min_x_m) * effective_pixels_per_meter
+        right = margin_left + (x_m + w_m - min_x_m) * effective_pixels_per_meter
+        top = margin_top + (max_y_m - y_m - h_m) * effective_pixels_per_meter
+        bottom = margin_top + (max_y_m - y_m) * effective_pixels_per_meter
         draw.rectangle((left, top, right, bottom), fill="#6c7075", outline="#222222")
 
     for index, plan in enumerate(plans):
@@ -627,8 +751,8 @@ def save_gif(
             (
                 f"LaCAM + PIBT   sim t={time_value:.2f} s   "
                 f"dt={macro_dt:.2f} s   "
-                f"step={time_value / macro_dt:.2f}/{max_steps}   "
-                f"cost={solution['cost']:.3g}"
+                f"step={int(time_value / macro_dt + 1e-9)}/{max_steps}   "
+                f"cost={variant['cost']:.3g}"
             ),
             fill="#111111",
             font=title_font,
@@ -640,7 +764,7 @@ def save_gif(
             polygon = corners(x, y, yaw)
             frame_draw.polygon(polygon, fill=color, outline="white", width=2)
             center = cell_to_pixel(x, y)
-            heading = center + 0.38 * robot_length_cells * pixels_per_cell * np.array(
+            heading = center + 0.38 * robot_length_m * effective_pixels_per_meter * np.array(
                 [math.cos(yaw), -math.sin(yaw)]
             )
             frame_draw.line((tuple(center), tuple(heading)), fill="white", width=3)
@@ -677,15 +801,19 @@ def plan_and_animate(
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
+    collision_mode: str | None = None,
+    max_boundary_travel_per_interval_m: float | None = None,
     fps: int = 20,
     playback_speed: float = 1.0,
-    pixels_per_cell: int = 24,
-    waypoint_only: bool = False,
-) -> dict[str, Path]:
+    pixels_per_meter: float = 240.0,
+    pixels_per_cell: float | None = None,
+    waypoint_only: bool | None = None,
+    animation_modes: tuple[str, ...] = ("smooth", "waypoints"),
+    include_all_solutions: bool = True,
+) -> dict[str, Any]:
     output_directory = Path(output_directory).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     solution_file = output_directory / "solution.yaml"
-    gif_file = output_directory / "animation.gif"
     run_planner(
         repo_root,
         problem_file,
@@ -694,17 +822,72 @@ def plan_and_animate(
         transition_cache=transition_cache,
         candidate_cache=candidate_cache,
         ara_star=ara_star,
+        collision_mode=collision_mode,
+        max_boundary_travel_per_interval_m=(
+            max_boundary_travel_per_interval_m
+        ),
     )
-    save_gif(
-        problem_file,
-        solution_file,
-        gif_file,
-        fps=fps,
-        playback_speed=playback_speed,
-        pixels_per_cell=pixels_per_cell,
-        waypoint_only=waypoint_only,
+    with solution_file.open(encoding="utf-8") as stream:
+        solution: dict[str, Any] = yaml.safe_load(stream)
+
+    if waypoint_only is not None:
+        # Backwards compatibility with the old one-animation API.
+        animation_modes = ("waypoints" if waypoint_only else "smooth",)
+    invalid_modes = set(animation_modes) - {"smooth", "waypoints"}
+    if invalid_modes:
+        raise ValueError(f"unknown animation modes: {sorted(invalid_modes)}")
+
+    improvements = solution.get("improvements", [])
+    if include_all_solutions and improvements and all(
+        "plans" in item for item in improvements
+    ):
+        solution_indices: list[int | None] = list(range(len(improvements)))
+    else:
+        solution_indices = [None]
+
+    animations: list[dict[str, Any]] = []
+    for sequence, solution_index in enumerate(solution_indices):
+        variant = _select_solution_variant(solution, solution_index)
+        cost_text = str(variant["cost"]).replace(".", "p")
+        for mode in animation_modes:
+            gif_file = output_directory / (
+                f"solution_{sequence:02d}_cost_{cost_text}_{mode}.gif"
+            )
+            save_gif(
+                problem_file,
+                solution_file,
+                gif_file,
+                fps=fps,
+                playback_speed=playback_speed,
+                pixels_per_meter=pixels_per_meter,
+                pixels_per_cell=pixels_per_cell,
+                waypoint_only=mode == "waypoints",
+                solution_index=solution_index,
+            )
+            animations.append(
+                {
+                    "solution_index": solution_index,
+                    "cost": variant["cost"],
+                    "weight": variant.get("weight"),
+                    "elapsed_ms": variant.get("elapsed_ms"),
+                    "mode": mode,
+                    "path": gif_file,
+                }
+            )
+
+    preferred = next(
+        (
+            item["path"]
+            for item in reversed(animations)
+            if item["mode"] == "smooth"
+        ),
+        animations[-1]["path"],
     )
-    return {"solution": solution_file, "animation": gif_file}
+    return {
+        "solution": solution_file,
+        "animation": preferred,
+        "animations": animations,
+    }
 
 
 def benchmark_modes(

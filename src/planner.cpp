@@ -35,20 +35,76 @@ CollisionChecker::CollisionChecker(
     const Problem& problem,
     const PrimitiveTable& primitives)
     : problem_(problem),
-      primitives_(primitives),
-      static_grid_(problem.grid.width_cells, problem.grid.height_cells) {
+      primitives_(primitives) {
+  obstacle_polygons_.reserve(
+      problem.obstacles.size() + problem.metric_obstacles.size());
   for (const ObstacleRect& obstacle : problem.obstacles) {
-    static_grid_.add_rect(obstacle);
+    // ObstacleRect denotes a union of occupied grid cells. Cell (x, y) is the
+    // square [x-0.5, x+0.5] x [y-0.5, y+0.5] in the same coordinate system as
+    // State. Adjacent cells collapse into one metric rectangle.
+    obstacle_polygons_.push_back(ConvexPolygon{{
+        Point2{static_cast<double>(obstacle.x) - 0.5,
+               static_cast<double>(obstacle.y) - 0.5},
+        Point2{static_cast<double>(obstacle.x + obstacle.width) - 0.5,
+               static_cast<double>(obstacle.y) - 0.5},
+        Point2{static_cast<double>(obstacle.x + obstacle.width) - 0.5,
+               static_cast<double>(obstacle.y + obstacle.height) - 0.5},
+        Point2{static_cast<double>(obstacle.x) - 0.5,
+               static_cast<double>(obstacle.y + obstacle.height) - 0.5},
+    }});
   }
-  static_grid_.finalize();
+  for (const MetricObstacleRect& obstacle : problem.metric_obstacles) {
+    const double min_x = problem.grid.cell_x(obstacle.x_m);
+    const double min_y = problem.grid.cell_y(obstacle.y_m);
+    const double max_x =
+        problem.grid.cell_x(obstacle.x_m + obstacle.width_m);
+    const double max_y =
+        problem.grid.cell_y(obstacle.y_m + obstacle.height_m);
+    obstacle_polygons_.push_back(ConvexPolygon{{
+        Point2{min_x, min_y},
+        Point2{max_x, min_y},
+        Point2{max_x, max_y},
+        Point2{min_x, max_y},
+    }});
+  }
 }
 
 bool CollisionChecker::statically_valid(
     const State& start,
     PrimitiveId primitive_id) const {
-  const PrimitiveVariant& variant = primitives_.variant(primitive_id, start.heading);
-  for (const CellMask& mask : variant.interval_masks) {
-    if (static_grid_.intersects(mask, start.x, start.y)) return false;
+  const PrimitiveVariant& variant =
+      primitives_.variant(primitive_id, start.heading);
+
+  // Metric inputs use an explicit physical boundary converted into lattice
+  // coordinates. Legacy inputs retain the historical outer half-cell bounds.
+  // Direct polygon tests avoid any extra full-cell dilation.
+  const double min_x = problem_.grid.collision_min_x_cells();
+  const double min_y = problem_.grid.collision_min_y_cells();
+  const double max_x = problem_.grid.collision_max_x_cells();
+  const double max_y = problem_.grid.collision_max_y_cells();
+
+  for (const ConvexPolygon& polygon : variant.interval_polygons) {
+    if (!shifted_polygon_inside_bounds(
+            polygon,
+            static_cast<double>(start.x),
+            static_cast<double>(start.y),
+            min_x,
+            min_y,
+            max_x,
+            max_y)) {
+      return false;
+    }
+    for (const ConvexPolygon& obstacle : obstacle_polygons_) {
+      if (shifted_polygons_intersect(
+              polygon,
+              static_cast<double>(start.x),
+              static_cast<double>(start.y),
+              obstacle,
+              0.0,
+              0.0)) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -62,13 +118,28 @@ bool CollisionChecker::conflict(
       primitives_.variant(left_primitive, left_start.heading);
   const PrimitiveVariant& right =
       primitives_.variant(right_primitive, right_start.heading);
-  if (left.interval_masks.size() != right.interval_masks.size()) {
+  if (problem_.search.collision_mode == "whole_step") {
+    return shifted_polygons_intersect(
+        left.whole_step_polygon,
+        static_cast<double>(left_start.x),
+        static_cast<double>(left_start.y),
+        right.whole_step_polygon,
+        static_cast<double>(right_start.x),
+        static_cast<double>(right_start.y));
+  }
+  if (left.interval_polygons.size() != right.interval_polygons.size()) {
     throw std::logic_error("primitive interval counts differ");
   }
-  for (std::size_t interval = 0; interval < left.interval_masks.size(); ++interval) {
-    if (shifted_intersects(
-            left.interval_masks[interval], left_start.x, left_start.y,
-            right.interval_masks[interval], right_start.x, right_start.y)) {
+  for (std::size_t interval = 0;
+       interval < left.interval_polygons.size();
+       ++interval) {
+    if (shifted_polygons_intersect(
+            left.interval_polygons[interval],
+            static_cast<double>(left_start.x),
+            static_cast<double>(left_start.y),
+            right.interval_polygons[interval],
+            static_cast<double>(right_start.x),
+            static_cast<double>(right_start.y))) {
       return true;
     }
   }
@@ -820,13 +891,14 @@ void Planner::publish_solution(
 
   solution.success = true;
   solution.cost = attempt.cost;
-  solution.plans.resize(problem_.agents.size());
+  std::vector<AgentPlan> plans(problem_.agents.size());
   for (std::size_t i = 0; i < problem_.agents.size(); ++i) {
-    solution.plans[i].states = attempt.states[i];
-    solution.plans[i].primitive_ids = attempt.primitives[i];
+    plans[i].states = attempt.states[i];
+    plans[i].primitive_ids = attempt.primitives[i];
   }
-  solution.improvements.push_back(
-      Improvement{deadline.elapsed_ms(), attempt.cost, weight});
+  solution.plans = plans;
+  solution.improvements.push_back(Improvement{
+      deadline.elapsed_ms(), attempt.cost, weight, std::move(plans)});
 
   std::cout << "solution improved: cost=" << attempt.cost
             << " weight=" << weight
@@ -1064,6 +1136,10 @@ Solution Planner::solve() {
   solution.stats.transition_cache_enabled = transitions_.cache_enabled();
   solution.stats.candidate_cache_enabled = candidates_.cache_enabled();
   solution.stats.ara_star_enabled = problem_.search.use_ara_star;
+  solution.stats.collision_mode = problem_.search.collision_mode;
+  solution.stats.max_boundary_travel_per_interval_m =
+      problem_.search.max_boundary_travel_per_interval_m;
+  solution.stats.collision_interval_count = primitives_.interval_count();
 
   solution.stats.transition_lookups = transitions_.lookups();
   solution.stats.transition_cache_hits = transitions_.cache_hits();

@@ -134,6 +134,7 @@ void PrimitiveTable::generate_primitives() {
         "rotation primitive exceeds max_angular_velocity");
   }
 
+  // Currently, the agent can rotate in one rotation_bin in the single macro_dt.
   max_rotation_bins_ = rotation_bins;
 
   std::set<int> pivot_offsets(
@@ -147,8 +148,7 @@ void PrimitiveTable::generate_primitives() {
   }
 
   // The center of the rectangle travels around the selected pivot.
-  // Check its tangential velocity as a conservative interpretation of
-  // max_linear_velocity.
+  // Check its tangential velocity as a conservative interpretation of max_linear_velocity.
   for (int offset : pivot_offsets) {
     const double center_linear_velocity =
         std::abs(static_cast<double>(offset)) *
@@ -316,24 +316,34 @@ void PrimitiveTable::build_variants() {
     }
   }
 
-  constexpr double
-      maximum_boundary_travel_per_interval = 0.25;
+  // Temporal collision accuracy is specified in metres, not planning cells.
+  // Consequently changing grid.cell_size changes the search resolution but
+  // not the physical fidelity of the swept-region approximation.
+
+  const double maximum_boundary_travel_m =
+      maximum_boundary_travel_cells * grid.cell_size;
 
   interval_count_ =
       std::max<std::size_t>(
           1,
           static_cast<std::size_t>(
               std::ceil(
-                  maximum_boundary_travel_cells /
-                  maximum_boundary_travel_per_interval)));
+                  maximum_boundary_travel_m /
+                  problem_.search
+                      .max_boundary_travel_per_interval_m)));
 
   interval_count_ =
       std::min<std::size_t>(
           interval_count_,
-          256);
+          1024);
 
+  // Three poses are sampled in every interval (start, middle and end). Every
+  // intermediate boundary point is therefore at most one quarter of the
+  // interval's maximum boundary travel from its nearest sample. Enlarging the
+  // sampled rectangles by that distance conservatively covers the motion
+  // between samples.
   const double actual_guard_cells =
-      0.5 *
+      0.25 *
       maximum_boundary_travel_cells /
       static_cast<double>(interval_count_);
 
@@ -366,8 +376,10 @@ void PrimitiveTable::build_variants() {
          ++heading) {
       PrimitiveVariant variant;
 
-      variant.interval_masks.reserve(
+      variant.interval_polygons.reserve(
           interval_count_);
+      std::vector<Point2> whole_step_points;
+      whole_step_points.reserve(interval_count_ * 12);
 
       const double start_yaw =
           static_cast<double>(heading) *
@@ -459,8 +471,8 @@ void PrimitiveTable::build_variants() {
         const double alpha_mid =
             0.5 * (alpha0 + alpha1);
 
-        std::vector<CellMask> samples;
-        samples.reserve(3);
+        std::vector<Point2> sampled_corners;
+        sampled_corners.reserve(12);
 
         for (double alpha :
              {alpha0, alpha_mid, alpha1}) {
@@ -508,18 +520,29 @@ void PrimitiveTable::build_variants() {
                     primitive.dy);
           }
 
-          samples.push_back(
-              rasterize_oriented_rectangle(
+          std::vector<Point2> corners =
+              oriented_rectangle_corners(
                   center_x,
                   center_y,
                   yaw,
                   half_length_cells,
-                  half_width_cells));
+                  half_width_cells);
+          sampled_corners.insert(
+              sampled_corners.end(), corners.begin(), corners.end());
         }
 
-        variant.interval_masks.push_back(
-            union_masks(samples));
+        ConvexPolygon interval_polygon =
+            convex_hull(std::move(sampled_corners));
+        whole_step_points.insert(
+            whole_step_points.end(),
+            interval_polygon.vertices.begin(),
+            interval_polygon.vertices.end());
+        variant.interval_polygons.push_back(
+            std::move(interval_polygon));
       }
+
+      variant.whole_step_polygon =
+          convex_hull(std::move(whole_step_points));
 
       variants_[primitive.id]
                [static_cast<std::size_t>(

@@ -18,6 +18,18 @@ struct CellMask {
   std::vector<RowSpan> rows;
 };
 
+struct Point2 {
+  double x = 0.0;
+  double y = 0.0;
+};
+
+// A counter-clockwise convex polygon in grid-cell coordinates. Unlike a
+// CellMask, its geometric accuracy does not change when the planning grid is
+// made coarser.
+struct ConvexPolygon {
+  std::vector<Point2> vertices;
+};
+
 class StaticGrid {
  public:
   StaticGrid() = default;
@@ -54,5 +66,40 @@ class StaticGrid {
     const CellMask& right,
     int right_x,
     int right_y);
+
+[[nodiscard]] std::vector<Point2> oriented_rectangle_corners(
+    double center_x_cells,
+    double center_y_cells,
+    double yaw,
+    double half_length_cells,
+    double half_width_cells);
+
+[[nodiscard]] ConvexPolygon convex_hull(std::vector<Point2> points);
+
+[[nodiscard]] bool shifted_polygons_intersect(
+    const ConvexPolygon& left,
+    double left_x,
+    double left_y,
+    const ConvexPolygon& right,
+    double right_x,
+    double right_y);
+
+[[nodiscard]] bool shifted_polygon_inside_bounds(
+    const ConvexPolygon& polygon,
+    double shift_x,
+    double shift_y,
+    double min_x,
+    double min_y,
+    double max_x,
+    double max_y);
+
+[[nodiscard]] bool shifted_polygon_intersects_rect(
+    const ConvexPolygon& polygon,
+    double shift_x,
+    double shift_y,
+    double min_x,
+    double min_y,
+    double max_x,
+    double max_y);
 
 }  // namespace lacam_primitive

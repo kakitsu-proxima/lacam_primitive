@@ -1,8 +1,7 @@
 grid:
-  cell_size: 0.05
+  cell_size: 0.1 # m 
   origin: [0.0, 0.0]
-  width_cells: 52
-  height_cells: 20
+  bounds_m: [0.0, 0.0, 2.6, 1.0]
   heading_bins: 4
   macro_dt: 0.20
 
@@ -10,38 +9,39 @@ robot:
   size: [0.825, 0.275] # [length, width] in m
   max_linear_velocity: 3.0 # m/s
   max_angular_velocity: 8.0 # rad/s
-  collision_padding: 0.01
+  collision_padding: 0.005
 
 primitives:
-  #translation_cells: [1, 2, 3, 4, 5]
-  translation_cells: [1, 2, 3, 4, 5, 6]
+  translation_distances_m: [0.1, 0.2, 0.3, 0.4, 0.5]
   rotation_bins: 1
-  #rotation_pivot_offsets_cells: [-5, 0, 5]
-  rotation_pivot_offsets_cells: [-5, 0, 5]
+  #rotation_pivot_offsets_m: [0.0]
+  rotation_pivot_offsets_m: [-0.3, 0.0, 0.3]
   include_wait: true
 
 search:
-  time_limit_ms: 1000
+  collision_mode: time_indexed
+  max_boundary_travel_per_interval_m: 0.005
+  time_limit_ms: 10000
   anytime: true
   initial_weight: 10.0
   minimum_weight: 1.0
   weight_step: 0.2
-  objective: sum_of_costs
-  max_expansions: 200000
+  #objective: sum_of_costs
+  objective: makespan
+  max_expansions: 20000
   max_branching: 8
   alternatives_per_agent: 4
   random_seed: 7
 
 obstacles: []
-#  - rect: [0, 0, 28, 1]
-#  - rect: [0, 11, 28, 1]
-#  - rect: [0, 0, 1, 12]
-#  - rect: [27, 0, 1, 12]
+# Metric obstacle example:
+#  - rect_m: [1.0, 0.3, 0.2, 0.4]
 
 agents:
-  - start: [9, 3, 0]
-    goal: [48, 10, 1]
-  - start: [48, 10, 1]
-    goal: [9, 16, 0]
-  - start: [9, 16, 0]
-    goal: [35, 10, 1]
+  # Physical poses are shared verbatim with example_cell_005.yaml.
+  - start_m: [0.5, 0.2, 0]
+    goal_m: [2.3, 0.5, 1]
+  - start_m: [2.3, 0.5, 1]
+    goal_m: [0.5, 0.7, 0]
+  - start_m: [0.5, 0.7, 0]
+    goal_m: [1.7, 0.5, 1]
