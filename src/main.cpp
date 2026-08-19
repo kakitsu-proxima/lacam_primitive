@@ -18,6 +18,14 @@ void print_usage(const char* executable) {
       << "       [--transition-cache on|off]\n"
       << "       [--candidate-cache on|off]\n"
       << "       [--ara-star on|off]\n"
+      << "       [--reverse-bfs on|off]\n"
+      << "       [--candidate-diversification on|off]\n"
+      << "       [--aabb-broadphase on|off]\n"
+      << "       [--conflict-cache on|off]\n"
+      << "       [--lazy-successors on|off]\n"
+      << "       [--progressive-widening on|off]\n"
+      << "       [--initial-candidate-width 1]\n"
+      << "       [--per-primitive-intervals on|off]\n"
       << "       [--collision-mode time_indexed|whole_step]\n"
       << "       [--max-boundary-travel-per-interval-m 0.005]\n";
 }
@@ -43,6 +51,14 @@ int main(int argc, char** argv) {
     std::optional<bool> override_transition_cache;
     std::optional<bool> override_candidate_cache;
     std::optional<bool> override_ara_star;
+    std::optional<bool> override_reverse_bfs;
+    std::optional<bool> override_candidate_diversification;
+    std::optional<bool> override_aabb_broadphase;
+    std::optional<bool> override_conflict_cache;
+    std::optional<bool> override_lazy_successors;
+    std::optional<bool> override_progressive_widening;
+    std::optional<std::size_t> override_initial_candidate_width;
+    std::optional<bool> override_per_primitive_intervals;
     std::optional<std::string> override_collision_mode;
     std::optional<double> override_max_boundary_travel;
 
@@ -62,6 +78,23 @@ int main(int argc, char** argv) {
             parse_on_off(argv[++i], argument);
       } else if (argument == "--ara-star" && i + 1 < argc) {
         override_ara_star = parse_on_off(argv[++i], argument);
+      } else if (argument == "--reverse-bfs" && i + 1 < argc) {
+        override_reverse_bfs = parse_on_off(argv[++i], argument);
+      } else if (argument == "--candidate-diversification" && i + 1 < argc) {
+        override_candidate_diversification = parse_on_off(argv[++i], argument);
+      } else if (argument == "--aabb-broadphase" && i + 1 < argc) {
+        override_aabb_broadphase = parse_on_off(argv[++i], argument);
+      } else if (argument == "--conflict-cache" && i + 1 < argc) {
+        override_conflict_cache = parse_on_off(argv[++i], argument);
+      } else if (argument == "--lazy-successors" && i + 1 < argc) {
+        override_lazy_successors = parse_on_off(argv[++i], argument);
+      } else if (argument == "--progressive-widening" && i + 1 < argc) {
+        override_progressive_widening = parse_on_off(argv[++i], argument);
+      } else if (argument == "--initial-candidate-width" && i + 1 < argc) {
+        override_initial_candidate_width =
+            static_cast<std::size_t>(std::stoull(argv[++i]));
+      } else if (argument == "--per-primitive-intervals" && i + 1 < argc) {
+        override_per_primitive_intervals = parse_on_off(argv[++i], argument);
       } else if (argument == "--collision-mode" && i + 1 < argc) {
         override_collision_mode = argv[++i];
       } else if (argument ==
@@ -94,6 +127,38 @@ int main(int argc, char** argv) {
     }
     if (override_ara_star.has_value()) {
       problem.search.use_ara_star = *override_ara_star;
+    }
+    if (override_reverse_bfs.has_value()) {
+      problem.search.use_reverse_bfs_heuristic = *override_reverse_bfs;
+    }
+    if (override_candidate_diversification.has_value()) {
+      problem.search.diversify_candidates =
+          *override_candidate_diversification;
+    }
+    if (override_aabb_broadphase.has_value()) {
+      problem.search.use_aabb_broadphase = *override_aabb_broadphase;
+    }
+    if (override_conflict_cache.has_value()) {
+      problem.search.use_conflict_cache = *override_conflict_cache;
+    }
+    if (override_lazy_successors.has_value()) {
+      problem.search.use_lazy_successors = *override_lazy_successors;
+    }
+    if (override_progressive_widening.has_value()) {
+      problem.search.use_progressive_widening =
+          *override_progressive_widening;
+    }
+    if (override_initial_candidate_width.has_value()) {
+      if (*override_initial_candidate_width == 0) {
+        throw std::invalid_argument(
+            "--initial-candidate-width must be positive");
+      }
+      problem.search.initial_candidate_width =
+          *override_initial_candidate_width;
+    }
+    if (override_per_primitive_intervals.has_value()) {
+      problem.search.use_per_primitive_intervals =
+          *override_per_primitive_intervals;
     }
     if (override_collision_mode.has_value()) {
       if (*override_collision_mode != "time_indexed" &&
@@ -128,6 +193,11 @@ int main(int argc, char** argv) {
         << " (candidate_cache="
         << solution.stats.candidate_cache_precompute_ms << ")\n"
         << "search: " << solution.stats.search_ms << " ms\n"
+        << "first solution: "
+        << (solution.success ? solution.stats.first_solution_ms : -1.0)
+        << " ms, cost="
+        << (solution.success ? solution.stats.first_solution_cost : -1.0)
+        << "\n"
         << "warm request: " << solution.stats.warm_request_ms << " ms\n"
         << "cold total: " << solution.stats.cold_total_ms << " ms\n"
         << "modes: transition_cache="
@@ -135,11 +205,25 @@ int main(int argc, char** argv) {
         << " candidate_cache="
         << on_off(solution.stats.candidate_cache_enabled)
         << " ara_star=" << on_off(solution.stats.ara_star_enabled)
+        << " reverse_bfs="
+        << on_off(solution.stats.reverse_bfs_heuristic_enabled)
+        << " diversification="
+        << on_off(solution.stats.candidate_diversification_enabled)
+        << " aabb=" << on_off(solution.stats.aabb_broadphase_enabled)
+        << " conflict_cache=" << on_off(solution.stats.conflict_cache_enabled)
+        << " lazy=" << on_off(solution.stats.lazy_successors_enabled)
+        << " widening="
+        << on_off(solution.stats.progressive_widening_enabled)
+        << " initial_width=" << solution.stats.initial_candidate_width
+        << " per_primitive_intervals="
+        << on_off(solution.stats.per_primitive_intervals_enabled)
         << " collision_mode=" << solution.stats.collision_mode
         << " max_boundary_travel_per_interval_m="
         << solution.stats.max_boundary_travel_per_interval_m
         << " collision_intervals="
         << solution.stats.collision_interval_count
+        << " interval_polygons="
+        << solution.stats.collision_interval_polygon_count
         << "\n"
         << "cache stats: transition "
         << solution.stats.transition_cache_hits << "/"
@@ -148,7 +232,21 @@ int main(int argc, char** argv) {
         << solution.stats.candidate_cache_hits << "/"
         << solution.stats.candidate_lookups
         << " hits, expanded_nodes="
-        << solution.stats.expanded_nodes << "\n";
+        << solution.stats.expanded_nodes
+        << ", low_level_nodes=" << solution.stats.low_level_constraint_nodes
+        << ", pibt_backtracks=" << solution.stats.pibt_backtracks
+        << ", continuations=" << solution.stats.successor_continuations
+        << ", widening_stages="
+        << solution.stats.progressive_widening_stages
+        << ", max_open=" << solution.stats.max_open_size << "\n"
+        << "collision stats: calls=" << solution.stats.conflict_calls
+        << ", cache_hits=" << solution.stats.conflict_cache_hits
+        << ", cache_entries=" << solution.stats.conflict_cache_entries
+        << ", whole_aabb_rejects=" << solution.stats.whole_step_aabb_rejects
+        << "/" << solution.stats.whole_step_aabb_tests
+        << ", interval_aabb_rejects=" << solution.stats.interval_aabb_rejects
+        << "/" << solution.stats.interval_aabb_tests
+        << ", SAT=" << solution.stats.polygon_sat_tests << "\n";
 
     if (!solution.success) {
       std::cerr << "No solution found within "

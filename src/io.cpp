@@ -161,6 +161,12 @@ void validate_problem(const Problem& problem) {
     throw std::runtime_error(
         "search.max_boundary_travel_per_interval_m must be positive");
   }
+  if (problem.search.max_branching == 0 ||
+      problem.search.alternatives_per_agent == 0 ||
+      problem.search.initial_candidate_width == 0) {
+    throw std::runtime_error(
+        "search branching and candidate widths must be positive");
+  }
   for (std::size_t i = 0; i < problem.agents.size(); ++i) {
     for (const auto& item : std::vector<std::pair<std::string, State>>{
              {"start", problem.agents[i].start},
@@ -368,6 +374,38 @@ Problem load_problem(const std::string& path) {
     if (const Node* value = optional_child(*search, "use_ara_star")) {
       problem.search.use_ara_star = value->as_bool();
     }
+    if (const Node* value = optional_child(
+            *search, "use_reverse_bfs_heuristic")) {
+      problem.search.use_reverse_bfs_heuristic = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "diversify_candidates")) {
+      problem.search.diversify_candidates = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_aabb_broadphase")) {
+      problem.search.use_aabb_broadphase = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_conflict_cache")) {
+      problem.search.use_conflict_cache = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_lazy_successors")) {
+      problem.search.use_lazy_successors = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_progressive_widening")) {
+      problem.search.use_progressive_widening = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "initial_candidate_width")) {
+      problem.search.initial_candidate_width = value->as_size();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_per_primitive_intervals")) {
+      problem.search.use_per_primitive_intervals = value->as_bool();
+    }
   }
 
   if (const Node* obstacles = optional_child(root, "obstacles")) {
@@ -474,6 +512,11 @@ void write_solution(
   stream << "  query_precompute_ms: "
          << solution.stats.query_precompute_ms << '\n';
   stream << "  search_ms: " << solution.stats.search_ms << '\n';
+  if (solution.success) {
+    stream << "  first_solution_ms: " << solution.stats.first_solution_ms << '\n';
+    stream << "  first_solution_cost: " << solution.stats.first_solution_cost
+           << '\n';
+  }
   stream << "  warm_request_ms: "
          << solution.stats.warm_request_ms << '\n';
   stream << "  cold_total_ms: "
@@ -488,11 +531,33 @@ void write_solution(
          << '\n';
   stream << "  ara_star_enabled: "
          << (solution.stats.ara_star_enabled ? "true" : "false") << '\n';
+  stream << "  reverse_bfs_heuristic_enabled: "
+         << (solution.stats.reverse_bfs_heuristic_enabled ? "true" : "false")
+         << '\n';
+  stream << "  candidate_diversification_enabled: "
+         << (solution.stats.candidate_diversification_enabled ? "true" : "false")
+         << '\n';
+  stream << "  aabb_broadphase_enabled: "
+         << (solution.stats.aabb_broadphase_enabled ? "true" : "false") << '\n';
+  stream << "  conflict_cache_enabled: "
+         << (solution.stats.conflict_cache_enabled ? "true" : "false") << '\n';
+  stream << "  lazy_successors_enabled: "
+         << (solution.stats.lazy_successors_enabled ? "true" : "false") << '\n';
+  stream << "  progressive_widening_enabled: "
+         << (solution.stats.progressive_widening_enabled ? "true" : "false")
+         << '\n';
+  stream << "  initial_candidate_width: "
+         << solution.stats.initial_candidate_width << '\n';
+  stream << "  per_primitive_intervals_enabled: "
+         << (solution.stats.per_primitive_intervals_enabled ? "true" : "false")
+         << '\n';
   stream << "  collision_mode: " << solution.stats.collision_mode << '\n';
   stream << "  max_boundary_travel_per_interval_m: "
          << solution.stats.max_boundary_travel_per_interval_m << '\n';
   stream << "  collision_interval_count: "
          << solution.stats.collision_interval_count << '\n';
+  stream << "  collision_interval_polygon_count: "
+         << solution.stats.collision_interval_polygon_count << '\n';
   stream << "  transition_lookups: "
          << solution.stats.transition_lookups << '\n';
   stream << "  transition_cache_hits: "
@@ -507,6 +572,42 @@ void write_solution(
          << solution.stats.candidate_on_demand_computations << '\n';
   stream << "  expanded_nodes: "
          << solution.stats.expanded_nodes << '\n';
+  stream << "  low_level_constraint_nodes: "
+         << solution.stats.low_level_constraint_nodes << '\n';
+  stream << "  pibt_plan_calls: " << solution.stats.pibt_plan_calls << '\n';
+  stream << "  pibt_assign_calls: " << solution.stats.pibt_assign_calls << '\n';
+  stream << "  pibt_candidate_attempts: "
+         << solution.stats.pibt_candidate_attempts << '\n';
+  stream << "  pibt_backtracks: " << solution.stats.pibt_backtracks << '\n';
+  stream << "  joint_moves_generated: "
+         << solution.stats.joint_moves_generated << '\n';
+  stream << "  joint_move_duplicates: "
+         << solution.stats.joint_move_duplicates << '\n';
+  stream << "  max_open_size: " << solution.stats.max_open_size << '\n';
+  stream << "  lazy_successor_requests: "
+         << solution.stats.lazy_successor_requests << '\n';
+  stream << "  successor_continuations: "
+         << solution.stats.successor_continuations << '\n';
+  stream << "  progressive_widening_stages: "
+         << solution.stats.progressive_widening_stages << '\n';
+  stream << "  max_candidate_width: "
+         << solution.stats.max_candidate_width << '\n';
+  stream << "  conflict_calls: " << solution.stats.conflict_calls << '\n';
+  stream << "  conflict_cache_hits: "
+         << solution.stats.conflict_cache_hits << '\n';
+  stream << "  conflict_cache_canonical_swaps: "
+         << solution.stats.conflict_cache_canonical_swaps << '\n';
+  stream << "  conflict_cache_entries: "
+         << solution.stats.conflict_cache_entries << '\n';
+  stream << "  whole_step_aabb_tests: "
+         << solution.stats.whole_step_aabb_tests << '\n';
+  stream << "  whole_step_aabb_rejects: "
+         << solution.stats.whole_step_aabb_rejects << '\n';
+  stream << "  interval_aabb_tests: "
+         << solution.stats.interval_aabb_tests << '\n';
+  stream << "  interval_aabb_rejects: "
+         << solution.stats.interval_aabb_rejects << '\n';
+  stream << "  polygon_sat_tests: " << solution.stats.polygon_sat_tests << '\n';
 
   stream << "grid:\n";
   stream << "  cell_size: " << problem.grid.cell_size << '\n';

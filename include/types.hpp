@@ -162,6 +162,16 @@ struct SearchOptions {
   bool use_transition_cache = LACAM_PRIMITIVE_DEFAULT_TRANSITION_CACHE != 0;
   bool use_candidate_cache = LACAM_PRIMITIVE_DEFAULT_CANDIDATE_CACHE != 0;
   bool use_ara_star = LACAM_PRIMITIVE_DEFAULT_ARA_STAR != 0;
+  // Exact in the single-agent graph, but not always the best ranking for the
+  // coupled multi-agent PIBT search. Keep it as an explicit experiment.
+  bool use_reverse_bfs_heuristic = false;
+  bool diversify_candidates = true;
+  bool use_aabb_broadphase = true;
+  bool use_conflict_cache = true;
+  bool use_lazy_successors = true;
+  bool use_progressive_widening = true;
+  std::size_t initial_candidate_width = 1;
+  bool use_per_primitive_intervals = true;
 };
 
 struct PrimitiveConfig {
@@ -235,6 +245,8 @@ struct RuntimeStats {
 
   // Starts immediately before graph search.
   double search_ms = 0.0;
+  double first_solution_ms = std::numeric_limits<double>::infinity();
+  double first_solution_cost = std::numeric_limits<double>::infinity();
 
   // static_precompute_ms + query_precompute_ms + search_ms.
   double cold_total_ms = 0.0;
@@ -246,9 +258,18 @@ struct RuntimeStats {
   bool transition_cache_enabled = false;
   bool candidate_cache_enabled = false;
   bool ara_star_enabled = false;
+  bool reverse_bfs_heuristic_enabled = false;
+  bool candidate_diversification_enabled = false;
+  bool aabb_broadphase_enabled = false;
+  bool conflict_cache_enabled = false;
+  bool lazy_successors_enabled = false;
+  bool progressive_widening_enabled = false;
+  std::size_t initial_candidate_width = 1;
+  bool per_primitive_intervals_enabled = false;
   std::string collision_mode = "time_indexed";
   double max_boundary_travel_per_interval_m = 0.005;
   std::size_t collision_interval_count = 0;
+  std::size_t collision_interval_polygon_count = 0;
 
   std::uint64_t transition_lookups = 0;
   std::uint64_t transition_cache_hits = 0;
@@ -259,6 +280,28 @@ struct RuntimeStats {
   std::uint64_t candidate_on_demand_computations = 0;
 
   std::uint64_t expanded_nodes = 0;
+  std::uint64_t low_level_constraint_nodes = 0;
+  std::uint64_t pibt_plan_calls = 0;
+  std::uint64_t pibt_assign_calls = 0;
+  std::uint64_t pibt_candidate_attempts = 0;
+  std::uint64_t pibt_backtracks = 0;
+  std::uint64_t joint_moves_generated = 0;
+  std::uint64_t joint_move_duplicates = 0;
+  std::uint64_t max_open_size = 0;
+  std::uint64_t lazy_successor_requests = 0;
+  std::uint64_t successor_continuations = 0;
+  std::uint64_t progressive_widening_stages = 0;
+  std::uint64_t max_candidate_width = 0;
+
+  std::uint64_t conflict_calls = 0;
+  std::uint64_t conflict_cache_hits = 0;
+  std::uint64_t conflict_cache_canonical_swaps = 0;
+  std::uint64_t conflict_cache_entries = 0;
+  std::uint64_t whole_step_aabb_tests = 0;
+  std::uint64_t whole_step_aabb_rejects = 0;
+  std::uint64_t interval_aabb_tests = 0;
+  std::uint64_t interval_aabb_rejects = 0;
+  std::uint64_t polygon_sat_tests = 0;
 };
 
 struct Solution {

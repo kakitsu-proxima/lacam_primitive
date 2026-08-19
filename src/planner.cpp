@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 namespace lacam_primitive {
 namespace {
@@ -30,6 +31,21 @@ double elapsed_ms_since(
 }
 
 }  // namespace
+
+std::size_t CollisionChecker::ConflictKeyHash::operator()(
+    const ConflictKey& key) const noexcept {
+  std::size_t seed = 0;
+  const auto mix = [&seed](std::size_t value) {
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+  };
+  mix(std::hash<int>{}(key.dx));
+  mix(std::hash<int>{}(key.dy));
+  mix(std::hash<int>{}(key.left_heading));
+  mix(std::hash<int>{}(key.right_heading));
+  mix(std::hash<PrimitiveId>{}(key.left_primitive));
+  mix(std::hash<PrimitiveId>{}(key.right_primitive));
+  return seed;
+}
 
 CollisionChecker::CollisionChecker(
     const Problem& problem,
@@ -114,36 +130,145 @@ bool CollisionChecker::conflict(
     PrimitiveId left_primitive,
     const State& right_start,
     PrimitiveId right_primitive) const {
+  ++conflict_calls_;
+  ConflictKey key{
+      right_start.x - left_start.x,
+      right_start.y - left_start.y,
+      left_start.heading,
+      right_start.heading,
+      left_primitive,
+      right_primitive};
+  if (problem_.search.use_conflict_cache) {
+    const ConflictKey swapped{
+        -key.dx,
+        -key.dy,
+        key.right_heading,
+        key.left_heading,
+        key.right_primitive,
+        key.left_primitive};
+    const auto as_tuple = [](const ConflictKey& value) {
+      return std::make_tuple(
+          value.dx, value.dy, value.left_heading, value.right_heading,
+          value.left_primitive, value.right_primitive);
+    };
+    if (as_tuple(swapped) < as_tuple(key)) {
+      key = swapped;
+      ++conflict_cache_canonical_swaps_;
+    }
+  }
+  if (problem_.search.use_conflict_cache) {
+    const auto found = conflict_cache_.find(key);
+    if (found != conflict_cache_.end()) {
+      ++conflict_cache_hits_;
+      return found->second;
+    }
+  }
+
   const PrimitiveVariant& left =
       primitives_.variant(left_primitive, left_start.heading);
   const PrimitiveVariant& right =
       primitives_.variant(right_primitive, right_start.heading);
+  const auto finish = [&](bool result) {
+    if (problem_.search.use_conflict_cache) {
+      conflict_cache_.emplace(key, result);
+    }
+    return result;
+  };
+
+  if (problem_.search.use_aabb_broadphase) {
+    ++whole_step_aabb_tests_;
+    if (!shifted_bounds_intersect(
+            left.whole_step_bounds,
+            static_cast<double>(left_start.x),
+            static_cast<double>(left_start.y),
+            right.whole_step_bounds,
+            static_cast<double>(right_start.x),
+            static_cast<double>(right_start.y))) {
+      ++whole_step_aabb_rejects_;
+      return finish(false);
+    }
+  }
   if (problem_.search.collision_mode == "whole_step") {
-    return shifted_polygons_intersect(
+    ++polygon_sat_tests_;
+    return finish(shifted_polygons_intersect(
         left.whole_step_polygon,
         static_cast<double>(left_start.x),
         static_cast<double>(left_start.y),
         right.whole_step_polygon,
         static_cast<double>(right_start.x),
-        static_cast<double>(right_start.y));
+        static_cast<double>(right_start.y)));
   }
-  if (left.interval_polygons.size() != right.interval_polygons.size()) {
-    throw std::logic_error("primitive interval counts differ");
+  if (left.interval_bounds.size() != left.interval_polygons.size() ||
+      right.interval_bounds.size() != right.interval_polygons.size()) {
+    throw std::logic_error("primitive interval AABB counts differ");
   }
-  for (std::size_t interval = 0;
-       interval < left.interval_polygons.size();
-       ++interval) {
-    if (shifted_polygons_intersect(
-            left.interval_polygons[interval],
-            static_cast<double>(left_start.x),
-            static_cast<double>(left_start.y),
-            right.interval_polygons[interval],
-            static_cast<double>(right_start.x),
-            static_cast<double>(right_start.y))) {
-      return true;
+  if (left.interval_polygons.empty() || right.interval_polygons.empty()) {
+    throw std::logic_error("primitive has no collision intervals");
+  }
+
+  // Each primitive may use a different uniform time partition. Walk the
+  // overlapping normalized intervals so comparisons remain synchronized.
+  std::size_t left_interval = 0;
+  std::size_t right_interval = 0;
+  while (left_interval < left.interval_polygons.size() &&
+         right_interval < right.interval_polygons.size()) {
+    if (problem_.search.use_aabb_broadphase) {
+      ++interval_aabb_tests_;
+      if (!shifted_bounds_intersect(
+              left.interval_bounds[left_interval],
+              static_cast<double>(left_start.x),
+              static_cast<double>(left_start.y),
+              right.interval_bounds[right_interval],
+              static_cast<double>(right_start.x),
+              static_cast<double>(right_start.y))) {
+        ++interval_aabb_rejects_;
+      } else {
+        ++polygon_sat_tests_;
+        if (shifted_polygons_intersect(
+                left.interval_polygons[left_interval],
+                static_cast<double>(left_start.x),
+                static_cast<double>(left_start.y),
+                right.interval_polygons[right_interval],
+                static_cast<double>(right_start.x),
+                static_cast<double>(right_start.y))) {
+          return finish(true);
+        }
+      }
+    } else {
+      ++polygon_sat_tests_;
+      if (shifted_polygons_intersect(
+              left.interval_polygons[left_interval],
+              static_cast<double>(left_start.x),
+              static_cast<double>(left_start.y),
+              right.interval_polygons[right_interval],
+              static_cast<double>(right_start.x),
+              static_cast<double>(right_start.y))) {
+        return finish(true);
+      }
     }
+
+    const std::uint64_t left_end_scaled =
+        static_cast<std::uint64_t>(left_interval + 1) *
+        static_cast<std::uint64_t>(right.interval_polygons.size());
+    const std::uint64_t right_end_scaled =
+        static_cast<std::uint64_t>(right_interval + 1) *
+        static_cast<std::uint64_t>(left.interval_polygons.size());
+    if (left_end_scaled <= right_end_scaled) ++left_interval;
+    if (right_end_scaled <= left_end_scaled) ++right_interval;
   }
-  return false;
+  return finish(false);
+}
+
+void CollisionChecker::reset_runtime_stats() const {
+  conflict_cache_.clear();
+  conflict_calls_ = 0;
+  conflict_cache_hits_ = 0;
+  conflict_cache_canonical_swaps_ = 0;
+  whole_step_aabb_tests_ = 0;
+  whole_step_aabb_rejects_ = 0;
+  interval_aabb_tests_ = 0;
+  interval_aabb_rejects_ = 0;
+  polygon_sat_tests_ = 0;
 }
 
 TransitionProvider::TransitionProvider(
@@ -313,6 +438,62 @@ double CandidateProvider::agent_heuristic(
       position_steps + rotation_steps);
 }
 
+State CandidateProvider::state_from_index(std::size_t index) const {
+  const int x = static_cast<int>(index % problem_.grid.width_cells);
+  index /= static_cast<std::size_t>(problem_.grid.width_cells);
+  const int y = static_cast<int>(index % problem_.grid.height_cells);
+  index /= static_cast<std::size_t>(problem_.grid.height_cells);
+  return State{x, y, static_cast<int>(index)};
+}
+
+void CandidateProvider::build_reverse_distances() {
+  reverse_edges_.assign(state_count_, {});
+  for (std::size_t index = 0; index < state_count_; ++index) {
+    const State state = state_from_index(index);
+    for (const Primitive& primitive : primitives_.primitives()) {
+      const TransitionEntry transition = transitions_.lookup(state, primitive.id);
+      if (!transition.valid) continue;
+      reverse_edges_[state_index(transition.next)].push_back(
+          static_cast<int>(index));
+    }
+  }
+
+  const int unreachable = std::numeric_limits<int>::max();
+  distance_to_goal_.assign(
+      problem_.agents.size(), std::vector<int>(state_count_, unreachable));
+  for (std::size_t agent = 0; agent < problem_.agents.size(); ++agent) {
+    auto& distance = distance_to_goal_[agent];
+    std::queue<std::size_t> open;
+    const std::size_t goal = state_index(problem_.agents[agent].goal);
+    distance[goal] = 0;
+    open.push(goal);
+    while (!open.empty()) {
+      const std::size_t next = open.front();
+      open.pop();
+      for (int predecessor : reverse_edges_[next]) {
+        const std::size_t previous = static_cast<std::size_t>(predecessor);
+        if (distance[previous] != unreachable) continue;
+        distance[previous] = distance[next] + 1;
+        open.push(previous);
+      }
+    }
+  }
+}
+
+double CandidateProvider::agent_distance(
+    std::size_t agent,
+    const State& state) const {
+  if (problem_.search.use_reverse_bfs_heuristic &&
+      !distance_to_goal_.empty()) {
+    const int distance = distance_to_goal_.at(agent).at(state_index(state));
+    if (distance == std::numeric_limits<int>::max()) {
+      return std::numeric_limits<double>::infinity();
+    }
+    return static_cast<double>(distance);
+  }
+  return agent_heuristic(agent, state);
+}
+
 std::vector<PrimitiveId> CandidateProvider::compute(
     std::size_t agent,
     const State& state) const {
@@ -333,7 +514,7 @@ std::vector<PrimitiveId> CandidateProvider::compute(
         primitive.id == primitives_.wait_id() ? (at_goal ? 0 : 1) : 0;
     ranked.push_back(Ranked{
         primitive.id,
-        agent_heuristic(agent, transition.next),
+        agent_distance(agent, transition.next),
         wait_penalty});
   }
 
@@ -354,20 +535,20 @@ std::vector<PrimitiveId> CandidateProvider::compute(
 }
 
 void CandidateProvider::build_cache() {
-  if (!cache_enabled_) {
-    precompute_ms_ = 0.0;
-    return;
-  }
-
   const auto start = std::chrono::steady_clock::now();
-  cache_.resize(problem_.agents.size() * state_count_);
+  if (problem_.search.use_reverse_bfs_heuristic) {
+    build_reverse_distances();
+  }
+  if (cache_enabled_) {
+    cache_.resize(problem_.agents.size() * state_count_);
 
-  for (std::size_t agent = 0; agent < problem_.agents.size(); ++agent) {
-    for (int heading = 0; heading < problem_.grid.heading_bins; ++heading) {
-      for (int y = 0; y < problem_.grid.height_cells; ++y) {
-        for (int x = 0; x < problem_.grid.width_cells; ++x) {
-          const State state{x, y, heading};
-          cache_[cache_index(agent, state)] = compute(agent, state);
+    for (std::size_t agent = 0; agent < problem_.agents.size(); ++agent) {
+      for (int heading = 0; heading < problem_.grid.heading_bins; ++heading) {
+        for (int y = 0; y < problem_.grid.height_cells; ++y) {
+          for (int x = 0; x < problem_.grid.width_cells; ++x) {
+            const State state{x, y, heading};
+            cache_[cache_index(agent, state)] = compute(agent, state);
+          }
         }
       }
     }
@@ -404,13 +585,15 @@ PIBT::PIBT(
     const CollisionChecker& collision_checker,
     const TransitionProvider& transitions,
     const CandidateProvider& candidates,
-    std::mt19937& random)
+    std::mt19937& random,
+    SearchInstrumentation& instrumentation)
     : problem_(problem),
       primitives_(primitives),
       collision_checker_(collision_checker),
       transitions_(transitions),
       candidates_(candidates),
-      random_(random) {}
+      random_(random),
+      instrumentation_(instrumentation) {}
 
 const std::vector<PrimitiveId>& PIBT::ordered_candidates(
     std::size_t agent,
@@ -425,6 +608,7 @@ bool PIBT::plan(
     const std::vector<std::optional<PrimitiveId>>& forced,
     std::vector<PrimitiveId>& selected,
     std::vector<State>& next) {
+  ++instrumentation_.pibt_plan_calls;
   const std::size_t count = current.size();
   selected.assign(count, primitives_.wait_id());
   next = current;
@@ -449,6 +633,7 @@ bool PIBT::assign_agent(
     std::vector<State>& next,
     std::vector<bool>& assigned,
     std::vector<bool>& visiting) {
+  ++instrumentation_.pibt_assign_calls;
   const std::size_t id = static_cast<std::size_t>(agent);
   if (assigned[id]) return true;
   if (visiting[id]) return false;
@@ -465,6 +650,7 @@ bool PIBT::assign_agent(
   }
 
   for (PrimitiveId candidate : *candidates) {
+    ++instrumentation_.pibt_candidate_attempts;
     const TransitionEntry transition = transitions_.lookup(current[id], candidate);
     if (!transition.valid) continue;
 
@@ -521,6 +707,7 @@ bool PIBT::assign_agent(
     next = next_snapshot;
     assigned = assigned_snapshot;
     visiting = visiting_snapshot;
+    ++instrumentation_.pibt_backtracks;
   }
 
   visiting[id] = false;
@@ -588,45 +775,7 @@ Planner::Planner(Problem problem)
 double Planner::single_agent_steps(
     std::size_t agent,
     const State& state) const {
-  const State& goal =
-      problem_.agents[agent].goal;
-
-  const int manhattan =
-      std::abs(state.x - goal.x) +
-      std::abs(state.y - goal.y);
-
-  const int max_position_delta =
-      std::max(
-          1,
-          primitives_
-              .max_position_delta_cells());
-
-  const int position_steps =
-      (manhattan +
-       max_position_delta - 1) /
-      max_position_delta;
-
-  const int heading_distance =
-      circular_heading_distance(
-          state.heading,
-          goal.heading,
-          problem_.grid.heading_bins);
-
-  const int rotation_steps =
-      (heading_distance +
-       primitives_.max_rotation_bins() - 1) /
-      primitives_.max_rotation_bins();
-
-  if (primitives_
-          .has_coupled_rotation_translation()) {
-    return static_cast<double>(
-        std::max(
-            position_steps,
-            rotation_steps));
-  }
-
-  return static_cast<double>(
-      position_steps + rotation_steps);
+  return candidates_.agent_distance(agent, state);
 }
 
 double Planner::heuristic(
@@ -684,46 +833,87 @@ std::vector<int> Planner::priority_order(
   return order;
 }
 
-std::vector<std::pair<std::vector<PrimitiveId>, std::vector<State>>>
-Planner::generate_joint_moves(
+std::optional<Planner::JointMove> Planner::next_joint_move(
     const std::vector<State>& configuration,
     const std::vector<int>& order,
     PIBT& pibt,
-    Deadline& deadline) {
-  struct LowLevelNode {
-    std::size_t depth = 0;
-    std::vector<std::optional<PrimitiveId>> forced;
+    Deadline& deadline,
+    JointMoveGeneratorState& generator) {
+  ++instrumentation_.lazy_successor_requests;
+  const std::size_t maximum_width =
+      std::max<std::size_t>(1, problem_.search.alternatives_per_agent);
+
+  const auto reset_frontier = [&]() {
+    generator.open = std::queue<LowLevelConstraintNode>();
+    generator.seen_constraint_nodes.clear();
+    generator.open.push(LowLevelConstraintNode{
+        0,
+        std::vector<std::optional<PrimitiveId>>(configuration.size())});
   };
 
-  std::queue<LowLevelNode> open;
-  open.push(LowLevelNode{
-      0,
-      std::vector<std::optional<PrimitiveId>>(configuration.size())});
-  std::unordered_set<std::string> seen_constraint_nodes;
-  std::unordered_set<std::string> seen_joint_moves;
-  std::vector<std::pair<std::vector<PrimitiveId>, std::vector<State>>> results;
+  if (!generator.initialized) {
+    generator.initialized = true;
+    generator.candidate_width = problem_.search.use_progressive_widening
+        ? std::min(maximum_width,
+                   std::max<std::size_t>(
+                       1, problem_.search.initial_candidate_width))
+        : maximum_width;
+    instrumentation_.max_candidate_width = std::max<std::uint64_t>(
+        instrumentation_.max_candidate_width, generator.candidate_width);
+    reset_frontier();
+  }
 
-  while (!open.empty() &&
-         results.size() < problem_.search.max_branching &&
-         !deadline.expired()) {
-    LowLevelNode node = std::move(open.front());
-    open.pop();
+  while (!deadline.expired()) {
+    if (generator.yielded >= problem_.search.max_branching) {
+      generator.exhausted = true;
+      return std::nullopt;
+    }
+    if (generator.open.empty()) {
+      if (problem_.search.use_progressive_widening &&
+          generator.candidate_width < maximum_width) {
+        generator.candidate_width = std::min(
+            maximum_width,
+            std::max(generator.candidate_width + 1,
+                     generator.candidate_width * 2));
+        ++instrumentation_.progressive_widening_stages;
+        instrumentation_.max_candidate_width = std::max<std::uint64_t>(
+            instrumentation_.max_candidate_width, generator.candidate_width);
+        reset_frontier();
+        continue;
+      }
+      generator.exhausted = true;
+      return std::nullopt;
+    }
+
+    LowLevelConstraintNode node = std::move(generator.open.front());
+    generator.open.pop();
+    ++instrumentation_.low_level_constraint_nodes;
 
     std::vector<PrimitiveId> selected;
     std::vector<State> next;
+    bool unique_result = false;
     if (pibt.plan(configuration, order, node.forced, selected, next)) {
       const std::string combo = primitive_combo_key(selected);
-      if (seen_joint_moves.insert(combo).second) {
-        results.push_back({selected, next});
+      if (generator.seen_joint_moves.insert(combo).second) {
+        unique_result = true;
+      } else {
+        ++instrumentation_.joint_move_duplicates;
       }
     }
 
-    if (node.depth >= order.size()) continue;
+    if (node.depth >= order.size()) {
+      if (unique_result) {
+        ++generator.yielded;
+        ++instrumentation_.joint_moves_generated;
+        return JointMove{std::move(selected), std::move(next)};
+      }
+      continue;
+    }
     const int agent = order[node.depth];
 
-    LowLevelNode skip = node;
+    LowLevelConstraintNode skip = node;
     ++skip.depth;
-    open.push(std::move(skip));
+    generator.open.push(std::move(skip));
 
     std::vector<PrimitiveId> candidate_scratch;
     const std::vector<PrimitiveId>& candidate_list =
@@ -732,25 +922,78 @@ Planner::generate_joint_moves(
             configuration[static_cast<std::size_t>(agent)],
             candidate_scratch);
     const std::size_t limit = std::min(
-        problem_.search.alternatives_per_agent,
+        generator.candidate_width,
         candidate_list.size());
 
-    for (std::size_t i = 0; i < limit; ++i) {
-      LowLevelNode child = node;
+    std::vector<PrimitiveId> diversified;
+    const std::vector<PrimitiveId>* alternatives = &candidate_list;
+    if (problem_.search.diversify_candidates &&
+        primitives_.has_off_center_pivots() && limit > 0) {
+      diversified.reserve(limit);
+      enum class Family {
+        kLongTranslation,
+        kShortTranslation,
+        kCenterRotation,
+        kFrontPivot,
+        kRearPivot,
+        kWait,
+      };
+      const auto family = [&](PrimitiveId id) {
+        const Primitive& primitive = primitives_.primitive(id);
+        if (id == primitives_.wait_id()) return Family::kWait;
+        if (!primitive.pivot_rotation) {
+          const int distance = std::abs(primitive.dx) + std::abs(primitive.dy);
+          return distance == primitives_.max_translation_cells()
+                     ? Family::kLongTranslation
+                     : Family::kShortTranslation;
+        }
+        if (primitive.pivot_offset_cells > 0) return Family::kFrontPivot;
+        if (primitive.pivot_offset_cells < 0) return Family::kRearPivot;
+        return Family::kCenterRotation;
+      };
+      std::vector<Family> used_families;
+      for (PrimitiveId id : candidate_list) {
+        const Family candidate_family = family(id);
+        if (std::find(
+                used_families.begin(), used_families.end(), candidate_family) !=
+            used_families.end()) {
+          continue;
+        }
+        used_families.push_back(candidate_family);
+        diversified.push_back(id);
+        if (diversified.size() >= limit) break;
+      }
+      alternatives = &diversified;
+    }
+
+    for (std::size_t i = 0; i < alternatives->size() && i < limit; ++i) {
+      LowLevelConstraintNode child = node;
       child.depth = node.depth + 1;
-      child.forced[static_cast<std::size_t>(agent)] = candidate_list[i];
+      child.forced[static_cast<std::size_t>(agent)] = (*alternatives)[i];
 
       std::ostringstream key;
       key << child.depth << ':';
       for (const auto& value : child.forced) {
         key << (value.has_value() ? static_cast<int>(*value) : -1) << ',';
       }
-      if (seen_constraint_nodes.insert(key.str()).second) {
-        open.push(std::move(child));
+      if (generator.seen_constraint_nodes.insert(key.str()).second) {
+        generator.open.push(std::move(child));
       }
     }
+
+    if (unique_result) {
+      ++generator.yielded;
+      ++instrumentation_.joint_moves_generated;
+      return JointMove{std::move(selected), std::move(next)};
+    }
   }
-  return results;
+  return std::nullopt;
+}
+
+bool Planner::generator_has_more(
+    const JointMoveGeneratorState& generator) const {
+  return !generator.exhausted &&
+         generator.yielded < problem_.search.max_branching;
 }
 
 Planner::SearchAttempt Planner::reconstruct(
@@ -810,12 +1053,15 @@ Planner::SearchAttempt Planner::weighted_search(
       serial++,
       0,
       0});
+  instrumentation_.max_open_size = std::max<std::uint64_t>(
+      instrumentation_.max_open_size, open.size());
 
   std::unordered_map<std::vector<State>, double, JointStateHash> best_g;
   best_g[start] = 0.0;
 
   PIBT pibt(
-      problem_, primitives_, collision_checker_, transitions_, candidates_, random_);
+      problem_, primitives_, collision_checker_, transitions_, candidates_, random_,
+      instrumentation_);
   std::size_t attempt_expansions = 0;
 
   while (!open.empty() &&
@@ -836,14 +1082,48 @@ Planner::SearchAttempt Planner::weighted_search(
       return reconstruct(nodes, entry.node_index);
     }
 
-    ++attempt_expansions;
-    ++expanded_nodes;
+    SearchNode& current_node =
+        nodes[static_cast<std::size_t>(entry.node_index)];
+    if (!current_node.expansion_counted) {
+      current_node.expansion_counted = true;
+      ++attempt_expansions;
+      ++expanded_nodes;
+    }
     const std::vector<State> configuration = current_ref.configuration;
     const double current_g = current_ref.g;
     const int current_depth = current_ref.depth;
     const std::vector<int> order = priority_order(configuration);
-    const auto joint_moves =
-        generate_joint_moves(configuration, order, pibt, deadline);
+    if (!current_node.successor_generator) {
+      current_node.successor_generator =
+          std::make_shared<JointMoveGeneratorState>();
+    }
+    const std::size_t successor_quota =
+        problem_.search.use_lazy_successors
+            ? 1
+            : problem_.search.max_branching;
+    std::vector<JointMove> joint_moves;
+    joint_moves.reserve(successor_quota);
+    for (std::size_t generated = 0;
+         generated < successor_quota && !deadline.expired();
+         ++generated) {
+      std::optional<JointMove> move = next_joint_move(
+          configuration, order, pibt, deadline,
+          *current_node.successor_generator);
+      if (!move.has_value()) break;
+      joint_moves.push_back(std::move(*move));
+    }
+    if (generator_has_more(*current_node.successor_generator) &&
+        !deadline.expired()) {
+      ++instrumentation_.successor_continuations;
+      open.push(QueueEntry{
+          current_g + weight * current_ref.h,
+          current_ref.h,
+          serial++,
+          0,
+          entry.node_index});
+      instrumentation_.max_open_size = std::max<std::uint64_t>(
+          instrumentation_.max_open_size, open.size());
+    }
     const double step_cost = edge_cost(configuration);
 
     for (const auto& move : joint_moves) {
@@ -877,6 +1157,8 @@ Planner::SearchAttempt Planner::weighted_search(
           serial++,
           0,
           index});
+      instrumentation_.max_open_size = std::max<std::uint64_t>(
+          instrumentation_.max_open_size, open.size());
     }
   }
   return SearchAttempt{};
@@ -973,6 +1255,8 @@ void Planner::solve_ara_star(
         serial++,
         node.open_stamp,
         index});
+    instrumentation_.max_open_size = std::max<std::uint64_t>(
+        instrumentation_.max_open_size, open.size());
   };
 
   auto discard_stale_open_entries = [&]() {
@@ -992,7 +1276,8 @@ void Planner::solve_ara_star(
   }
 
   PIBT pibt(
-      problem_, primitives_, collision_checker_, transitions_, candidates_, random_);
+      problem_, primitives_, collision_checker_, transitions_, candidates_, random_,
+      instrumentation_);
 
   while (!deadline.expired() &&
          expanded_nodes < problem_.search.max_expansions) {
@@ -1017,15 +1302,37 @@ void Planner::solve_ara_star(
         continue;
       }
       current_node.in_open = false;
-      current_node.closed = true;
-
-      ++expanded_nodes;
+      current_node.closed = false;
+      if (!current_node.expansion_counted) {
+        current_node.expansion_counted = true;
+        ++expanded_nodes;
+      }
       const std::vector<State> configuration = current_node.configuration;
       const double current_g = current_node.g;
       const int current_depth = current_node.depth;
       const std::vector<int> order = priority_order(configuration);
-      const auto joint_moves =
-          generate_joint_moves(configuration, order, pibt, deadline);
+      if (!current_node.successor_generator) {
+        current_node.successor_generator =
+            std::make_shared<JointMoveGeneratorState>();
+      }
+      const std::size_t successor_quota =
+          problem_.search.use_lazy_successors
+              ? 1
+              : problem_.search.max_branching;
+      std::vector<JointMove> joint_moves;
+      joint_moves.reserve(successor_quota);
+      for (std::size_t generated = 0;
+           generated < successor_quota && !deadline.expired();
+           ++generated) {
+        std::optional<JointMove> move = next_joint_move(
+            configuration, order, pibt, deadline,
+            *current_node.successor_generator);
+        if (!move.has_value()) break;
+        joint_moves.push_back(std::move(*move));
+      }
+      const bool continuation_required =
+          generator_has_more(*current_node.successor_generator) &&
+          !deadline.expired();
       const double step_cost = edge_cost(configuration);
 
       for (const auto& move : joint_moves) {
@@ -1057,6 +1364,8 @@ void Planner::solve_ara_star(
         child.parent = entry.node_index;
         child.incoming = incoming;
         child.depth = current_depth + 1;
+        child.successor_generator.reset();
+        child.expansion_counted = false;
 
         if (!child.closed) {
           push_open(next_index);
@@ -1069,6 +1378,16 @@ void Planner::solve_ara_star(
           publish_solution_from_node(
               nodes, goal_index, weight, deadline, solution);
         }
+      }
+
+      SearchNode& resumed =
+          nodes[static_cast<std::size_t>(entry.node_index)];
+      if (continuation_required) {
+        ++instrumentation_.successor_continuations;
+        resumed.closed = false;
+        push_open(entry.node_index);
+      } else {
+        resumed.closed = true;
       }
     }
 
@@ -1106,6 +1425,8 @@ void Planner::solve_ara_star(
 Solution Planner::solve() {
   transitions_.reset_runtime_stats();
   candidates_.reset_runtime_stats();
+  collision_checker_.reset_runtime_stats();
+  instrumentation_ = SearchInstrumentation{};
 
   Deadline deadline(problem_.search.time_limit_ms);
   Solution solution;
@@ -1128,6 +1449,10 @@ Solution Planner::solve() {
       candidates_.precompute_ms();
   solution.stats.query_precompute_ms = query_precompute_ms_;
   solution.stats.search_ms = solution.elapsed_ms;
+  if (!solution.improvements.empty()) {
+    solution.stats.first_solution_ms = solution.improvements.front().elapsed_ms;
+    solution.stats.first_solution_cost = solution.improvements.front().cost;
+  }
   solution.stats.cold_total_ms =
       static_precompute_ms_ + query_precompute_ms_ + solution.elapsed_ms;
   solution.stats.warm_request_ms =
@@ -1136,10 +1461,28 @@ Solution Planner::solve() {
   solution.stats.transition_cache_enabled = transitions_.cache_enabled();
   solution.stats.candidate_cache_enabled = candidates_.cache_enabled();
   solution.stats.ara_star_enabled = problem_.search.use_ara_star;
+  solution.stats.reverse_bfs_heuristic_enabled =
+      problem_.search.use_reverse_bfs_heuristic;
+  solution.stats.candidate_diversification_enabled =
+      problem_.search.diversify_candidates;
+  solution.stats.aabb_broadphase_enabled =
+      problem_.search.use_aabb_broadphase;
+  solution.stats.conflict_cache_enabled =
+      problem_.search.use_conflict_cache;
+  solution.stats.lazy_successors_enabled =
+      problem_.search.use_lazy_successors;
+  solution.stats.progressive_widening_enabled =
+      problem_.search.use_progressive_widening;
+  solution.stats.initial_candidate_width =
+      problem_.search.initial_candidate_width;
+  solution.stats.per_primitive_intervals_enabled =
+      problem_.search.use_per_primitive_intervals;
   solution.stats.collision_mode = problem_.search.collision_mode;
   solution.stats.max_boundary_travel_per_interval_m =
       problem_.search.max_boundary_travel_per_interval_m;
   solution.stats.collision_interval_count = primitives_.interval_count();
+  solution.stats.collision_interval_polygon_count =
+      primitives_.total_variant_intervals();
 
   solution.stats.transition_lookups = transitions_.lookups();
   solution.stats.transition_cache_hits = transitions_.cache_hits();
@@ -1151,6 +1494,43 @@ Solution Planner::solve() {
   solution.stats.candidate_on_demand_computations =
       candidates_.on_demand_computations();
   solution.stats.expanded_nodes = expanded_nodes;
+  solution.stats.low_level_constraint_nodes =
+      instrumentation_.low_level_constraint_nodes;
+  solution.stats.pibt_plan_calls = instrumentation_.pibt_plan_calls;
+  solution.stats.pibt_assign_calls = instrumentation_.pibt_assign_calls;
+  solution.stats.pibt_candidate_attempts =
+      instrumentation_.pibt_candidate_attempts;
+  solution.stats.pibt_backtracks = instrumentation_.pibt_backtracks;
+  solution.stats.joint_moves_generated =
+      instrumentation_.joint_moves_generated;
+  solution.stats.joint_move_duplicates =
+      instrumentation_.joint_move_duplicates;
+  solution.stats.max_open_size = instrumentation_.max_open_size;
+  solution.stats.lazy_successor_requests =
+      instrumentation_.lazy_successor_requests;
+  solution.stats.successor_continuations =
+      instrumentation_.successor_continuations;
+  solution.stats.progressive_widening_stages =
+      instrumentation_.progressive_widening_stages;
+  solution.stats.max_candidate_width =
+      instrumentation_.max_candidate_width;
+
+  solution.stats.conflict_calls = collision_checker_.conflict_calls();
+  solution.stats.conflict_cache_hits =
+      collision_checker_.conflict_cache_hits();
+  solution.stats.conflict_cache_canonical_swaps =
+      collision_checker_.conflict_cache_canonical_swaps();
+  solution.stats.conflict_cache_entries =
+      collision_checker_.conflict_cache_entries();
+  solution.stats.whole_step_aabb_tests =
+      collision_checker_.whole_step_aabb_tests();
+  solution.stats.whole_step_aabb_rejects =
+      collision_checker_.whole_step_aabb_rejects();
+  solution.stats.interval_aabb_tests =
+      collision_checker_.interval_aabb_tests();
+  solution.stats.interval_aabb_rejects =
+      collision_checker_.interval_aabb_rejects();
+  solution.stats.polygon_sat_tests = collision_checker_.polygon_sat_tests();
 
   return solution;
 }

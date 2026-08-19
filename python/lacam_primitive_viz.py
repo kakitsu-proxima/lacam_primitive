@@ -28,6 +28,14 @@ def run_planner(
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
+    reverse_bfs: bool | None = None,
+    candidate_diversification: bool | None = None,
+    aabb_broadphase: bool | None = None,
+    conflict_cache: bool | None = None,
+    lazy_successors: bool | None = None,
+    progressive_widening: bool | None = None,
+    initial_candidate_width: int | None = None,
+    per_primitive_intervals: bool | None = None,
     collision_mode: str | None = None,
     max_boundary_travel_per_interval_m: float | None = None,
 ) -> Path:
@@ -55,6 +63,23 @@ def run_planner(
         command.extend(["--candidate-cache", "on" if candidate_cache else "off"])
     if ara_star is not None:
         command.extend(["--ara-star", "on" if ara_star else "off"])
+    for option, value in (
+        ("--reverse-bfs", reverse_bfs),
+        ("--candidate-diversification", candidate_diversification),
+        ("--aabb-broadphase", aabb_broadphase),
+        ("--conflict-cache", conflict_cache),
+        ("--lazy-successors", lazy_successors),
+        ("--progressive-widening", progressive_widening),
+        ("--per-primitive-intervals", per_primitive_intervals),
+    ):
+        if value is not None:
+            command.extend([option, "on" if value else "off"])
+    if initial_candidate_width is not None:
+        if initial_candidate_width <= 0:
+            raise ValueError("initial_candidate_width must be positive")
+        command.extend(
+            ["--initial-candidate-width", str(int(initial_candidate_width))]
+        )
     if collision_mode is not None:
         if collision_mode not in {"time_indexed", "whole_step"}:
             raise ValueError(
@@ -801,6 +826,14 @@ def plan_and_animate(
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
+    reverse_bfs: bool | None = None,
+    candidate_diversification: bool | None = None,
+    aabb_broadphase: bool | None = None,
+    conflict_cache: bool | None = None,
+    lazy_successors: bool | None = None,
+    progressive_widening: bool | None = None,
+    initial_candidate_width: int | None = None,
+    per_primitive_intervals: bool | None = None,
     collision_mode: str | None = None,
     max_boundary_travel_per_interval_m: float | None = None,
     fps: int = 20,
@@ -822,6 +855,14 @@ def plan_and_animate(
         transition_cache=transition_cache,
         candidate_cache=candidate_cache,
         ara_star=ara_star,
+        reverse_bfs=reverse_bfs,
+        candidate_diversification=candidate_diversification,
+        aabb_broadphase=aabb_broadphase,
+        conflict_cache=conflict_cache,
+        lazy_successors=lazy_successors,
+        progressive_widening=progressive_widening,
+        initial_candidate_width=initial_candidate_width,
+        per_primitive_intervals=per_primitive_intervals,
         collision_mode=collision_mode,
         max_boundary_travel_per_interval_m=(
             max_boundary_travel_per_interval_m

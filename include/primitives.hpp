@@ -36,10 +36,13 @@ struct PrimitiveVariant {
   // measured in grid cells; the construction tolerance itself is specified in
   // metres so its physical accuracy is independent of planning cell_size.
   std::vector<ConvexPolygon> interval_polygons;
+  std::vector<AxisAlignedBounds> interval_bounds;
+  std::size_t interval_count = 1;
 
   // Convex hull of every interval polygon. Comparing this once per pair is
   // faster, but deliberately ignores when within the step an area is used.
   ConvexPolygon whole_step_polygon;
+  AxisAlignedBounds whole_step_bounds;
 };
 
 class PrimitiveTable {
@@ -82,8 +85,16 @@ class PrimitiveTable {
     return has_coupled_rotation_translation_;
   }
 
+  [[nodiscard]] bool has_off_center_pivots() const {
+    return has_off_center_pivots_;
+  }
+
   [[nodiscard]] std::size_t interval_count() const {
     return interval_count_;
+  }
+
+  [[nodiscard]] std::size_t total_variant_intervals() const {
+    return total_variant_intervals_;
   }
 
  private:
@@ -99,8 +110,10 @@ class PrimitiveTable {
   int max_rotation_bins_ = 1;
 
   bool has_coupled_rotation_translation_ = false;
+  bool has_off_center_pivots_ = false;
 
   std::size_t interval_count_ = 1;
+  std::size_t total_variant_intervals_ = 0;
 
   void generate_primitives();
   void build_variants();

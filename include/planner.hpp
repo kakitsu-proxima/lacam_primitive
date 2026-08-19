@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <random>
@@ -29,10 +30,82 @@ class CollisionChecker {
       const State& right_start,
       PrimitiveId right_primitive) const;
 
+  void reset_runtime_stats() const;
+  [[nodiscard]] std::uint64_t conflict_calls() const { return conflict_calls_; }
+  [[nodiscard]] std::uint64_t conflict_cache_hits() const {
+    return conflict_cache_hits_;
+  }
+  [[nodiscard]] std::uint64_t conflict_cache_canonical_swaps() const {
+    return conflict_cache_canonical_swaps_;
+  }
+  [[nodiscard]] std::size_t conflict_cache_entries() const {
+    return conflict_cache_.size();
+  }
+  [[nodiscard]] std::uint64_t whole_step_aabb_tests() const {
+    return whole_step_aabb_tests_;
+  }
+  [[nodiscard]] std::uint64_t whole_step_aabb_rejects() const {
+    return whole_step_aabb_rejects_;
+  }
+  [[nodiscard]] std::uint64_t interval_aabb_tests() const {
+    return interval_aabb_tests_;
+  }
+  [[nodiscard]] std::uint64_t interval_aabb_rejects() const {
+    return interval_aabb_rejects_;
+  }
+  [[nodiscard]] std::uint64_t polygon_sat_tests() const {
+    return polygon_sat_tests_;
+  }
+
  private:
+  struct ConflictKey {
+    int dx = 0;
+    int dy = 0;
+    int left_heading = 0;
+    int right_heading = 0;
+    PrimitiveId left_primitive = 0;
+    PrimitiveId right_primitive = 0;
+
+    bool operator==(const ConflictKey& other) const noexcept {
+      return dx == other.dx && dy == other.dy &&
+             left_heading == other.left_heading &&
+             right_heading == other.right_heading &&
+             left_primitive == other.left_primitive &&
+             right_primitive == other.right_primitive;
+    }
+  };
+
+  struct ConflictKeyHash {
+    std::size_t operator()(const ConflictKey& key) const noexcept;
+  };
+
   const Problem& problem_;
   const PrimitiveTable& primitives_;
   std::vector<ConvexPolygon> obstacle_polygons_;
+  mutable std::unordered_map<ConflictKey, bool, ConflictKeyHash> conflict_cache_;
+  mutable std::uint64_t conflict_calls_ = 0;
+  mutable std::uint64_t conflict_cache_hits_ = 0;
+  mutable std::uint64_t conflict_cache_canonical_swaps_ = 0;
+  mutable std::uint64_t whole_step_aabb_tests_ = 0;
+  mutable std::uint64_t whole_step_aabb_rejects_ = 0;
+  mutable std::uint64_t interval_aabb_tests_ = 0;
+  mutable std::uint64_t interval_aabb_rejects_ = 0;
+  mutable std::uint64_t polygon_sat_tests_ = 0;
+};
+
+struct SearchInstrumentation {
+  std::uint64_t low_level_constraint_nodes = 0;
+  std::uint64_t pibt_plan_calls = 0;
+  std::uint64_t pibt_assign_calls = 0;
+  std::uint64_t pibt_candidate_attempts = 0;
+  std::uint64_t pibt_backtracks = 0;
+  std::uint64_t joint_moves_generated = 0;
+  std::uint64_t joint_move_duplicates = 0;
+  std::uint64_t max_open_size = 0;
+  std::uint64_t lazy_successor_requests = 0;
+  std::uint64_t successor_continuations = 0;
+  std::uint64_t progressive_widening_stages = 0;
+  std::uint64_t max_candidate_width = 0;
 };
 
 struct TransitionEntry {
@@ -106,6 +179,10 @@ class CandidateProvider {
       const State& state,
       std::vector<PrimitiveId>& scratch) const;
 
+  [[nodiscard]] double agent_distance(
+      std::size_t agent,
+      const State& state) const;
+
   [[nodiscard]] bool cache_enabled() const { return cache_enabled_; }
   [[nodiscard]] double precompute_ms() const { return precompute_ms_; }
 
@@ -124,6 +201,8 @@ class CandidateProvider {
   bool cache_enabled_ = false;
   std::size_t state_count_ = 0;
   std::vector<std::vector<PrimitiveId>> cache_;
+  std::vector<std::vector<int>> reverse_edges_;
+  std::vector<std::vector<int>> distance_to_goal_;
   double precompute_ms_ = 0.0;
 
   mutable std::uint64_t lookups_ = 0;
@@ -140,6 +219,8 @@ class CandidateProvider {
   [[nodiscard]] std::vector<PrimitiveId> compute(
       std::size_t agent,
       const State& state) const;
+  [[nodiscard]] State state_from_index(std::size_t index) const;
+  void build_reverse_distances();
 };
 
 class PIBT {
@@ -150,7 +231,8 @@ class PIBT {
       const CollisionChecker& collision_checker,
       const TransitionProvider& transitions,
       const CandidateProvider& candidates,
-      std::mt19937& random);
+      std::mt19937& random,
+      SearchInstrumentation& instrumentation);
 
   [[nodiscard]] const std::vector<PrimitiveId>& ordered_candidates(
       std::size_t agent,
@@ -171,6 +253,7 @@ class PIBT {
   const TransitionProvider& transitions_;
   const CandidateProvider& candidates_;
   std::mt19937& random_;
+  SearchInstrumentation& instrumentation_;
 
   bool assign_agent(
       int agent,
@@ -189,6 +272,24 @@ class Planner {
   [[nodiscard]] Solution solve();
 
  private:
+  using JointMove =
+      std::pair<std::vector<PrimitiveId>, std::vector<State>>;
+
+  struct LowLevelConstraintNode {
+    std::size_t depth = 0;
+    std::vector<std::optional<PrimitiveId>> forced;
+  };
+
+  struct JointMoveGeneratorState {
+    std::queue<LowLevelConstraintNode> open;
+    std::unordered_set<std::string> seen_constraint_nodes;
+    std::unordered_set<std::string> seen_joint_moves;
+    std::size_t candidate_width = 0;
+    std::size_t yielded = 0;
+    bool initialized = false;
+    bool exhausted = false;
+  };
+
   struct SearchNode {
     std::vector<State> configuration;
     int parent = -1;
@@ -202,6 +303,8 @@ class Planner {
     bool in_open = false;
     bool in_incons = false;
     std::uint64_t open_stamp = 0;
+    bool expansion_counted = false;
+    std::shared_ptr<JointMoveGeneratorState> successor_generator;
   };
 
   struct QueueEntry {
@@ -233,6 +336,7 @@ class Planner {
   TransitionProvider transitions_;
   CandidateProvider candidates_;
   std::mt19937 random_;
+  SearchInstrumentation instrumentation_;
 
   double primitive_collision_precompute_ms_ = 0.0;
   double static_precompute_ms_ = 0.0;
@@ -279,12 +383,15 @@ class Planner {
   [[nodiscard]] bool is_goal(
       const std::vector<State>& configuration) const;
 
-  [[nodiscard]] std::vector<std::pair<std::vector<PrimitiveId>, std::vector<State>>>
-  generate_joint_moves(
+  [[nodiscard]] std::optional<JointMove> next_joint_move(
       const std::vector<State>& configuration,
       const std::vector<int>& order,
       PIBT& pibt,
-      Deadline& deadline);
+      Deadline& deadline,
+      JointMoveGeneratorState& generator);
+
+  [[nodiscard]] bool generator_has_more(
+      const JointMoveGeneratorState& generator) const;
 
   [[nodiscard]] SearchAttempt reconstruct(
       const std::vector<SearchNode>& nodes,

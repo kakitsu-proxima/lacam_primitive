@@ -30,6 +30,24 @@ struct ConvexPolygon {
   std::vector<Point2> vertices;
 };
 
+struct AxisAlignedBounds {
+  double min_x = 0.0;
+  double min_y = 0.0;
+  double max_x = 0.0;
+  double max_y = 0.0;
+};
+
+[[nodiscard]] AxisAlignedBounds polygon_bounds(
+    const ConvexPolygon& polygon);
+
+[[nodiscard]] bool shifted_bounds_intersect(
+    const AxisAlignedBounds& left,
+    double left_x,
+    double left_y,
+    const AxisAlignedBounds& right,
+    double right_x,
+    double right_y);
+
 class StaticGrid {
  public:
   StaticGrid() = default;

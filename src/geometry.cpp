@@ -289,6 +289,38 @@ ConvexPolygon rectangle_polygon(
 
 }  // namespace
 
+AxisAlignedBounds polygon_bounds(const ConvexPolygon& polygon) {
+  if (polygon.vertices.empty()) {
+    throw std::invalid_argument("cannot bound an empty polygon");
+  }
+  AxisAlignedBounds result{
+      polygon.vertices.front().x,
+      polygon.vertices.front().y,
+      polygon.vertices.front().x,
+      polygon.vertices.front().y};
+  for (const Point2& point : polygon.vertices) {
+    result.min_x = std::min(result.min_x, point.x);
+    result.min_y = std::min(result.min_y, point.y);
+    result.max_x = std::max(result.max_x, point.x);
+    result.max_y = std::max(result.max_y, point.y);
+  }
+  return result;
+}
+
+bool shifted_bounds_intersect(
+    const AxisAlignedBounds& left,
+    double left_x,
+    double left_y,
+    const AxisAlignedBounds& right,
+    double right_x,
+    double right_y) {
+  constexpr double epsilon = 1e-12;
+  return left.min_x + left_x <= right.max_x + right_x + epsilon &&
+         right.min_x + right_x <= left.max_x + left_x + epsilon &&
+         left.min_y + left_y <= right.max_y + right_y + epsilon &&
+         right.min_y + right_y <= left.max_y + left_y + epsilon;
+}
+
 ConvexPolygon convex_hull(std::vector<Point2> points) {
   if (points.size() < 3) {
     throw std::invalid_argument("convex hull needs at least three points");

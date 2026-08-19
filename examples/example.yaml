@@ -14,7 +14,8 @@ robot:
 primitives:
   translation_distances_m: [0.1, 0.2, 0.3, 0.4, 0.5]
   rotation_bins: 1
-  #rotation_pivot_offsets_m: [0.0]
+  # Same physical pivot locations are used at both cell sizes.
+  #rotation_pivot_offsets_m: [-0.1, 0.0, 0.1]
   rotation_pivot_offsets_m: [-0.3, 0.0, 0.3]
   include_wait: true
 
@@ -23,15 +24,23 @@ search:
   max_boundary_travel_per_interval_m: 0.005
   time_limit_ms: 10000
   anytime: true
-  initial_weight: 10.0
+  initial_weight: 5.0
   minimum_weight: 1.0
-  weight_step: 0.2
+  weight_step: 0.1
   #objective: sum_of_costs
   objective: makespan
   max_expansions: 20000
   max_branching: 8
   alternatives_per_agent: 4
   random_seed: 7
+  use_reverse_bfs_heuristic: true
+  diversify_candidates: true
+  use_aabb_broadphase: true
+  use_conflict_cache: true
+  use_lazy_successors: true
+  use_progressive_widening: true
+  initial_candidate_width: 4
+  use_per_primitive_intervals: true
 
 obstacles: []
 # Metric obstacle example:

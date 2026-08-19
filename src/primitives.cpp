@@ -150,6 +150,7 @@ void PrimitiveTable::generate_primitives() {
   // The center of the rectangle travels around the selected pivot.
   // Check its tangential velocity as a conservative interpretation of max_linear_velocity.
   for (int offset : pivot_offsets) {
+    if (offset != 0) has_off_center_pivots_ = true;
     const double center_linear_velocity =
         std::abs(static_cast<double>(offset)) *
         grid.cell_size *
@@ -274,9 +275,7 @@ void PrimitiveTable::build_variants() {
       std::hypot(robot.length, robot.width) /
       grid.cell_size;
 
-  double maximum_boundary_travel_cells = 0.0;
-
-  for (const Primitive& primitive : primitives_) {
+  const auto boundary_travel_cells = [&](const Primitive& primitive) {
     if (primitive.pivot_rotation) {
       const double rotation =
           std::abs(
@@ -291,82 +290,61 @@ void PrimitiveTable::build_variants() {
               static_cast<double>(
                   primitive.pivot_offset_cells));
 
-      maximum_boundary_travel_cells =
-          std::max(
-              maximum_boundary_travel_cells,
-              (pivot_radius + radius_cells) *
-                  rotation);
-    } else {
-      const double translation =
-          std::hypot(
-              static_cast<double>(primitive.dx),
-              static_cast<double>(primitive.dy));
-
-      const double rotation =
-          std::abs(
-              static_cast<double>(
-                  primitive.d_heading)) *
-          grid.heading_step();
-
-      maximum_boundary_travel_cells =
-          std::max(
-              maximum_boundary_travel_cells,
-              translation +
-                  radius_cells * rotation);
+      return (pivot_radius + radius_cells) * rotation;
     }
-  }
+    const double translation =
+        std::hypot(
+            static_cast<double>(primitive.dx),
+            static_cast<double>(primitive.dy));
+    const double rotation =
+        std::abs(static_cast<double>(primitive.d_heading)) *
+        grid.heading_step();
+    return translation + radius_cells * rotation;
+  };
 
   // Temporal collision accuracy is specified in metres, not planning cells.
   // Consequently changing grid.cell_size changes the search resolution but
   // not the physical fidelity of the swept-region approximation.
 
-  const double maximum_boundary_travel_m =
-      maximum_boundary_travel_cells * grid.cell_size;
+  interval_count_ = 1;
 
-  interval_count_ =
-      std::max<std::size_t>(
-          1,
-          static_cast<std::size_t>(
-              std::ceil(
-                  maximum_boundary_travel_m /
-                  problem_.search
-                      .max_boundary_travel_per_interval_m)));
-
-  interval_count_ =
-      std::min<std::size_t>(
-          interval_count_,
-          1024);
-
-  // Three poses are sampled in every interval (start, middle and end). Every
-  // intermediate boundary point is therefore at most one quarter of the
-  // interval's maximum boundary travel from its nearest sample. Enlarging the
-  // sampled rectangles by that distance conservatively covers the motion
-  // between samples.
-  const double actual_guard_cells =
-      0.25 *
-      maximum_boundary_travel_cells /
-      static_cast<double>(interval_count_);
-
-  const double half_length_cells =
-      0.5 *
-          robot.length /
-          grid.cell_size +
-      robot.collision_padding /
-          grid.cell_size +
-      actual_guard_cells;
-
-  const double half_width_cells =
-      0.5 *
-          robot.width /
-          grid.cell_size +
-      robot.collision_padding /
-          grid.cell_size +
-      actual_guard_cells;
+  double maximum_boundary_travel_cells = 0.0;
+  for (const Primitive& primitive : primitives_) {
+    maximum_boundary_travel_cells = std::max(
+        maximum_boundary_travel_cells, boundary_travel_cells(primitive));
+  }
 
   variants_.resize(primitives_.size());
 
   for (const Primitive& primitive :
        primitives_) {
+    const double primitive_boundary_travel_cells =
+        problem_.search.use_per_primitive_intervals
+            ? boundary_travel_cells(primitive)
+            : maximum_boundary_travel_cells;
+    const std::size_t primitive_interval_count =
+        std::min<std::size_t>(
+            1024,
+            std::max<std::size_t>(
+                1,
+                static_cast<std::size_t>(std::ceil(
+                    primitive_boundary_travel_cells * grid.cell_size /
+                    problem_.search.max_boundary_travel_per_interval_m))));
+    interval_count_ = std::max(interval_count_, primitive_interval_count);
+
+    // Each primitive now owns only the temporal resolution required by its
+    // physical boundary travel. The normalized interval endpoints are used
+    // later to synchronize primitives with different counts.
+    const double actual_guard_cells =
+        0.25 * primitive_boundary_travel_cells /
+        static_cast<double>(primitive_interval_count);
+    const double half_length_cells =
+        0.5 * robot.length / grid.cell_size +
+        robot.collision_padding / grid.cell_size + actual_guard_cells;
+    const double half_width_cells =
+        0.5 * robot.width / grid.cell_size +
+        robot.collision_padding / grid.cell_size + actual_guard_cells;
+
     variants_[primitive.id].resize(
         static_cast<std::size_t>(
             grid.heading_bins));
@@ -375,11 +353,14 @@ void PrimitiveTable::build_variants() {
          heading < grid.heading_bins;
          ++heading) {
       PrimitiveVariant variant;
+      variant.interval_count = primitive_interval_count;
+      total_variant_intervals_ += primitive_interval_count;
 
       variant.interval_polygons.reserve(
-          interval_count_);
+          primitive_interval_count);
+      variant.interval_bounds.reserve(primitive_interval_count);
       std::vector<Point2> whole_step_points;
-      whole_step_points.reserve(interval_count_ * 12);
+      whole_step_points.reserve(primitive_interval_count * 12);
 
       const double start_yaw =
           static_cast<double>(heading) *
@@ -456,17 +437,17 @@ void PrimitiveTable::build_variants() {
                   std::abs(variant.delta.y));
 
       for (std::size_t interval = 0;
-           interval < interval_count_;
+           interval < primitive_interval_count;
            ++interval) {
         const double alpha0 =
             static_cast<double>(interval) /
             static_cast<double>(
-                interval_count_);
+                primitive_interval_count);
 
         const double alpha1 =
             static_cast<double>(interval + 1) /
             static_cast<double>(
-                interval_count_);
+                primitive_interval_count);
 
         const double alpha_mid =
             0.5 * (alpha0 + alpha1);
@@ -539,10 +520,14 @@ void PrimitiveTable::build_variants() {
             interval_polygon.vertices.end());
         variant.interval_polygons.push_back(
             std::move(interval_polygon));
+        variant.interval_bounds.push_back(
+            polygon_bounds(variant.interval_polygons.back()));
       }
 
       variant.whole_step_polygon =
           convex_hull(std::move(whole_step_points));
+      variant.whole_step_bounds =
+          polygon_bounds(variant.whole_step_polygon);
 
       variants_[primitive.id]
                [static_cast<std::size_t>(
