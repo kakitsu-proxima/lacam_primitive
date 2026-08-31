@@ -4,9 +4,16 @@
 #include <vector>
 
 #include "geometry.hpp"
+#include "kinematics.hpp"
 #include "types.hpp"
 
 namespace lacam_primitive {
+
+enum class ProgressCoordinate {
+  kStationary,
+  kTranslationMetres,
+  kRotationRadians,
+};
 
 struct Primitive {
   PrimitiveId id = 0;
@@ -24,12 +31,34 @@ struct Primitive {
   // Body-frame longitudinal offset from the rectangle center.
   // Positive = front (+body-x), negative = rear.
   int pivot_offset_cells = 0;
+
+  // Feasible boundary-rate range for a constant-acceleration time law. The
+  // planner does not select one exact rate yet; this envelope is intentionally
+  // retained for the downstream continuous trajectory layer.
+  ProgressCoordinate progress_coordinate = ProgressCoordinate::kStationary;
+  ConstantAccelerationEnvelope progress_envelope;
+
+  // Limits used by the sequence-level cubic time-scaling validator. For a
+  // fixed-pivot rotation these already include the conservative rigid-body
+  // point-acceleration cap.
+  double kinematic_max_rate = 0.0;
+  double kinematic_max_acceleration =
+      std::numeric_limits<double>::infinity();
+  bool kinematically_feasible = true;
 };
 
 struct PrimitiveVariant {
   // Important:
   // for pivot rotations, delta.x / delta.y depend on start heading.
   State delta;
+
+  // Metric boundary twist produced by one unit of the scalar progress rate
+  // stored in Primitive::progress_envelope. A continuous layer can choose
+  // rates from the envelope and enforce
+  // previous.end_basis * rate == next.start_basis * rate without the graph
+  // committing to one exact speed.
+  Twist2D start_twist_per_progress_rate;
+  Twist2D end_twist_per_progress_rate;
 
   // A conservative metric swept region for each common time interval.
   // Coordinates are relative to the primitive's integer start anchor and are
@@ -81,6 +110,10 @@ class PrimitiveTable {
     return max_rotation_bins_;
   }
 
+  [[nodiscard]] std::size_t active_rotation_amount_count() const {
+    return active_rotation_amount_count_;
+  }
+
   [[nodiscard]] bool has_coupled_rotation_translation() const {
     return has_coupled_rotation_translation_;
   }
@@ -108,6 +141,7 @@ class PrimitiveTable {
   int max_translation_cells_ = 1;
   int max_position_delta_cells_ = 1;
   int max_rotation_bins_ = 1;
+  std::size_t active_rotation_amount_count_ = 1;
 
   bool has_coupled_rotation_translation_ = false;
   bool has_off_center_pivots_ = false;

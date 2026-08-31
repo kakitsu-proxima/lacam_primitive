@@ -36,6 +36,8 @@ def run_planner(
     progressive_widening: bool | None = None,
     initial_candidate_width: int | None = None,
     per_primitive_intervals: bool | None = None,
+    multiple_rotation_amounts: bool | None = None,
+    acceleration_constraints: bool | None = None,
     collision_mode: str | None = None,
     max_boundary_travel_per_interval_m: float | None = None,
 ) -> Path:
@@ -71,6 +73,8 @@ def run_planner(
         ("--lazy-successors", lazy_successors),
         ("--progressive-widening", progressive_widening),
         ("--per-primitive-intervals", per_primitive_intervals),
+        ("--multiple-rotation-amounts", multiple_rotation_amounts),
+        ("--acceleration-constraints", acceleration_constraints),
     ):
         if value is not None:
             command.extend([option, "on" if value else "off"])
@@ -153,7 +157,11 @@ def _grid_dimensions(grid: dict[str, Any]) -> tuple[int, int]:
     )
 
 
-def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_primitive_catalog(
+    problem: dict[str, Any],
+    *,
+    multiple_rotation_amounts_enabled: bool | None = None,
+) -> list[dict[str, Any]]:
     """
     Reconstruct primitive IDs in exactly the same order as the C++ PrimitiveTable.
 
@@ -161,7 +169,7 @@ def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
 
       wait
       east/west/north/south for each sorted translation distance
-      rotate_ccw / rotate_cw for each sorted pivot offset
+      rotate_ccw / rotate_cw for each sorted rotation amount and pivot offset
     """
     primitive_cfg = problem["primitives"]
 
@@ -178,7 +186,17 @@ def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
             set(int(v) for v in primitive_cfg["translation_cells"])
         )
 
-    rotation_bins = int(primitive_cfg["rotation_bins"])
+    rotation_value = primitive_cfg["rotation_bins"]
+    if isinstance(rotation_value, list):
+        rotation_bin_counts = sorted(set(int(v) for v in rotation_value))
+    else:
+        rotation_bin_counts = [int(rotation_value)]
+    if multiple_rotation_amounts_enabled is None:
+        multiple_rotation_amounts_enabled = bool(
+            primitive_cfg.get("use_multiple_rotation_amounts", False)
+        )
+    if not multiple_rotation_amounts_enabled:
+        rotation_bin_counts = [min(rotation_bin_counts)]
 
     if "rotation_pivot_offsets_m" in primitive_cfg:
         pivot_offsets = sorted(
@@ -259,38 +277,45 @@ def _build_primitive_catalog(problem: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
-    for pivot_offset in pivot_offsets:
-        suffix = (
-            "center"
-            if pivot_offset == 0
-            else (
-                f"front_{pivot_offset}"
-                if pivot_offset > 0
-                else f"rear_{-pivot_offset}"
+    multiple_rotation_amounts = len(rotation_bin_counts) > 1
+    for rotation_bins in rotation_bin_counts:
+        for pivot_offset in pivot_offsets:
+            pivot_suffix = (
+                "center"
+                if pivot_offset == 0
+                else (
+                    f"front_{pivot_offset}"
+                    if pivot_offset > 0
+                    else f"rear_{-pivot_offset}"
+                )
             )
-        )
+            suffix = (
+                f"{rotation_bins}_{pivot_suffix}"
+                if multiple_rotation_amounts
+                else pivot_suffix
+            )
 
-        catalog.append(
-            {
-                "name": f"rotate_ccw_{suffix}",
-                "type": "pivot_rotation",
-                "dx": 0,
-                "dy": 0,
-                "d_heading": rotation_bins,
-                "pivot_offset_cells": pivot_offset,
-            }
-        )
+            catalog.append(
+                {
+                    "name": f"rotate_ccw_{suffix}",
+                    "type": "pivot_rotation",
+                    "dx": 0,
+                    "dy": 0,
+                    "d_heading": rotation_bins,
+                    "pivot_offset_cells": pivot_offset,
+                }
+            )
 
-        catalog.append(
-            {
-                "name": f"rotate_cw_{suffix}",
-                "type": "pivot_rotation",
-                "dx": 0,
-                "dy": 0,
-                "d_heading": -rotation_bins,
-                "pivot_offset_cells": pivot_offset,
-            }
-        )
+            catalog.append(
+                {
+                    "name": f"rotate_cw_{suffix}",
+                    "type": "pivot_rotation",
+                    "dx": 0,
+                    "dy": 0,
+                    "d_heading": -rotation_bins,
+                    "pivot_offset_cells": pivot_offset,
+                }
+            )
 
     return catalog
 
@@ -645,7 +670,19 @@ def save_gif(
     robot_length_m = float(robot["size"][0])
     robot_width_m = float(robot["size"][1])
 
-    plans = variant["plans"]
+    plans = []
+    for raw_plan in variant["plans"]:
+        plan = dict(raw_plan)
+        if raw_plan.get("states_m"):
+            plan["states"] = [
+                [
+                    (float(state[0]) - origin_x) / cell_size,
+                    (float(state[1]) - origin_y) / cell_size,
+                    int(state[2]),
+                ]
+                for state in raw_plan["states_m"]
+            ]
+        plans.append(plan)
     max_steps = max(len(plan["states"]) - 1 for plan in plans)
     max_duration = max_steps * macro_dt
     if waypoint_only:
@@ -659,7 +696,12 @@ def save_gif(
         target_sim_dt = playback_speed / fps
         frame_count = max(1, int(math.ceil(max_duration / target_sim_dt)))
         sample_times = np.linspace(0.0, max_duration, frame_count + 1)
-    primitive_catalog = (_build_primitive_catalog(problem))
+    primitive_catalog = _build_primitive_catalog(
+        problem,
+        multiple_rotation_amounts_enabled=solution.get("runtime", {}).get(
+            "multiple_rotation_amounts_enabled"
+        ),
+    )
 
     sampled = [
         _interpolate_plan(plan["states"], 
@@ -834,6 +876,8 @@ def plan_and_animate(
     progressive_widening: bool | None = None,
     initial_candidate_width: int | None = None,
     per_primitive_intervals: bool | None = None,
+    multiple_rotation_amounts: bool | None = None,
+    acceleration_constraints: bool | None = None,
     collision_mode: str | None = None,
     max_boundary_travel_per_interval_m: float | None = None,
     fps: int = 20,
@@ -863,6 +907,8 @@ def plan_and_animate(
         progressive_widening=progressive_widening,
         initial_candidate_width=initial_candidate_width,
         per_primitive_intervals=per_primitive_intervals,
+        multiple_rotation_amounts=multiple_rotation_amounts,
+        acceleration_constraints=acceleration_constraints,
         collision_mode=collision_mode,
         max_boundary_travel_per_interval_m=(
             max_boundary_travel_per_interval_m

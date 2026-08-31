@@ -26,6 +26,8 @@ void print_usage(const char* executable) {
       << "       [--progressive-widening on|off]\n"
       << "       [--initial-candidate-width 1]\n"
       << "       [--per-primitive-intervals on|off]\n"
+      << "       [--multiple-rotation-amounts on|off]\n"
+      << "       [--acceleration-constraints on|off]\n"
       << "       [--collision-mode time_indexed|whole_step]\n"
       << "       [--max-boundary-travel-per-interval-m 0.005]\n";
 }
@@ -59,6 +61,8 @@ int main(int argc, char** argv) {
     std::optional<bool> override_progressive_widening;
     std::optional<std::size_t> override_initial_candidate_width;
     std::optional<bool> override_per_primitive_intervals;
+    std::optional<bool> override_multiple_rotation_amounts;
+    std::optional<bool> override_acceleration_constraints;
     std::optional<std::string> override_collision_mode;
     std::optional<double> override_max_boundary_travel;
 
@@ -95,6 +99,10 @@ int main(int argc, char** argv) {
             static_cast<std::size_t>(std::stoull(argv[++i]));
       } else if (argument == "--per-primitive-intervals" && i + 1 < argc) {
         override_per_primitive_intervals = parse_on_off(argv[++i], argument);
+      } else if (argument == "--multiple-rotation-amounts" && i + 1 < argc) {
+        override_multiple_rotation_amounts = parse_on_off(argv[++i], argument);
+      } else if (argument == "--acceleration-constraints" && i + 1 < argc) {
+        override_acceleration_constraints = parse_on_off(argv[++i], argument);
       } else if (argument == "--collision-mode" && i + 1 < argc) {
         override_collision_mode = argv[++i];
       } else if (argument ==
@@ -160,6 +168,14 @@ int main(int argc, char** argv) {
       problem.search.use_per_primitive_intervals =
           *override_per_primitive_intervals;
     }
+    if (override_multiple_rotation_amounts.has_value()) {
+      problem.primitive_config.use_multiple_rotation_amounts =
+          *override_multiple_rotation_amounts;
+    }
+    if (override_acceleration_constraints.has_value()) {
+      problem.primitive_config.use_acceleration_constraints =
+          *override_acceleration_constraints;
+    }
     if (override_collision_mode.has_value()) {
       if (*override_collision_mode != "time_indexed" &&
           *override_collision_mode != "whole_step") {
@@ -217,6 +233,14 @@ int main(int argc, char** argv) {
         << " initial_width=" << solution.stats.initial_candidate_width
         << " per_primitive_intervals="
         << on_off(solution.stats.per_primitive_intervals_enabled)
+        << " multiple_rotations="
+        << on_off(solution.stats.multiple_rotation_amounts_enabled)
+        << " acceleration_constraints="
+        << on_off(solution.stats.acceleration_constraints_enabled)
+        << " pivot_anchor_lattice="
+        << on_off(solution.stats.pivot_anchor_lattice_enabled)
+        << " active_rotation_amounts="
+        << solution.stats.active_rotation_amount_count
         << " collision_mode=" << solution.stats.collision_mode
         << " max_boundary_travel_per_interval_m="
         << solution.stats.max_boundary_travel_per_interval_m
@@ -234,6 +258,14 @@ int main(int argc, char** argv) {
         << " hits, expanded_nodes="
         << solution.stats.expanded_nodes
         << ", low_level_nodes=" << solution.stats.low_level_constraint_nodes
+        << ", kinematic_validations="
+        << solution.stats.kinematic_validation_calls
+        << ", kinematic_failures="
+        << solution.stats.kinematic_validation_failures
+        << ", kinematic_restarts="
+        << solution.stats.kinematic_search_restarts
+        << ", kinematic_no_goods="
+        << solution.stats.kinematic_no_good_count
         << ", pibt_backtracks=" << solution.stats.pibt_backtracks
         << ", continuations=" << solution.stats.successor_continuations
         << ", widening_stages="

@@ -24,6 +24,7 @@ option(
 add_library(lacam_primitive_core
   src/yaml.cpp
   src/geometry.cpp
+  src/kinematics.cpp
   src/primitives.cpp
   src/planner.cpp
   src/io.cpp
@@ -63,4 +64,12 @@ if(BUILD_TESTING)
     PRIVATE LACAM_PRIMITIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
   )
   add_test(NAME lacam_primitive_tests COMMAND lacam_primitive_tests)
+  add_test(
+    NAME three_agent_anchor_45
+    COMMAND lacam_primitive
+      --input ${CMAKE_CURRENT_SOURCE_DIR}/tests/example_anchor_45_three_agents.yaml
+      --output ${CMAKE_CURRENT_BINARY_DIR}/three_agent_anchor_45_solution.yaml
+      --time-limit-ms 10000
+  )
+  set_tests_properties(three_agent_anchor_45 PROPERTIES TIMEOUT 15)
 endif()

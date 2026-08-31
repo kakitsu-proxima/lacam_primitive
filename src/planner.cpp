@@ -30,7 +30,114 @@ double elapsed_ms_since(
       .count();
 }
 
+double twist_norm(const Twist2D& twist) {
+  return std::sqrt(
+      twist.vx * twist.vx + twist.vy * twist.vy +
+      twist.omega * twist.omega);
+}
+
+ScalarInterval connect_boundary_rates(
+    const ScalarInterval& outgoing,
+    const Twist2D& outgoing_basis,
+    const Twist2D& incoming_basis) {
+  if (outgoing.empty()) return ScalarInterval{};
+  const double outgoing_norm = twist_norm(outgoing_basis);
+  const double incoming_norm = twist_norm(incoming_basis);
+  constexpr double basis_tolerance = 1e-10;
+
+  if (outgoing_norm <= basis_tolerance &&
+      incoming_norm <= basis_tolerance) {
+    return ScalarInterval{
+        -std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity()};
+  }
+  if (outgoing_norm <= basis_tolerance) {
+    return ScalarInterval{0.0, 0.0};
+  }
+  if (incoming_norm <= basis_tolerance) {
+    return outgoing.contains(0.0)
+               ? ScalarInterval{
+                     -std::numeric_limits<double>::infinity(),
+                     std::numeric_limits<double>::infinity()}
+               : ScalarInterval{};
+  }
+
+  const double incoming_components[3] = {
+      incoming_basis.vx, incoming_basis.vy, incoming_basis.omega};
+  const double outgoing_components[3] = {
+      outgoing_basis.vx, outgoing_basis.vy, outgoing_basis.omega};
+  int pivot = 0;
+  for (int i = 1; i < 3; ++i) {
+    if (std::abs(incoming_components[i]) >
+        std::abs(incoming_components[pivot])) {
+      pivot = i;
+    }
+  }
+  const double scale =
+      outgoing_components[pivot] / incoming_components[pivot];
+  double residual_squared = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double residual =
+        outgoing_components[i] - scale * incoming_components[i];
+    residual_squared += residual * residual;
+  }
+  if (std::sqrt(residual_squared) >
+      1e-9 * std::max({1.0, outgoing_norm, std::abs(scale) * incoming_norm})) {
+    return outgoing.contains(0.0)
+               ? ScalarInterval{0.0, 0.0}
+               : ScalarInterval{};
+  }
+
+  const double first = scale * outgoing.lower;
+  const double second = scale * outgoing.upper;
+  return ScalarInterval{
+      std::min(first, second), std::max(first, second)};
+}
+
 }  // namespace
+
+std::size_t Planner::KinematicNoGoodHash::operator()(
+    const KinematicNoGood& item) const noexcept {
+  std::size_t seed = 0;
+  const auto mix = [&seed](std::size_t value) {
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+  };
+  mix(std::hash<int>{}(item.previous_primitive));
+  mix(std::hash<int>{}(item.next_primitive));
+  mix(std::hash<int>{}(item.connection_heading));
+  mix(std::hash<int>{}(item.terminal_agent));
+  return seed;
+}
+
+std::size_t Planner::SearchKeyHash::operator()(
+    const SearchKey& item) const noexcept {
+  std::size_t seed = JointStateHash{}(item.configuration);
+  for (PrimitiveId primitive : item.previous_primitives) {
+    seed ^= std::hash<PrimitiveId>{}(primitive) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+  }
+  for (const ScalarInterval& interval : item.boundary_rates) {
+    seed ^= std::hash<double>{}(interval.lower) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+    seed ^= std::hash<double>{}(interval.upper) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+  }
+  return seed;
+}
+
+Planner::SearchKey Planner::make_search_key(
+    const std::vector<State>& configuration,
+    const std::vector<PrimitiveId>& previous_primitives,
+    const std::vector<ScalarInterval>& boundary_rates) const {
+  return SearchKey{
+      configuration,
+      problem_.primitive_config.use_acceleration_constraints
+          ? previous_primitives
+          : std::vector<PrimitiveId>{},
+      problem_.primitive_config.use_acceleration_constraints
+          ? boundary_rates
+          : std::vector<ScalarInterval>{}};
+}
 
 std::size_t CollisionChecker::ConflictKeyHash::operator()(
     const ConflictKey& key) const noexcept {
@@ -98,12 +205,14 @@ bool CollisionChecker::statically_valid(
   const double min_y = problem_.grid.collision_min_y_cells();
   const double max_x = problem_.grid.collision_max_x_cells();
   const double max_y = problem_.grid.collision_max_y_cells();
+  const double start_x = problem_.center_x_cells(start);
+  const double start_y = problem_.center_y_cells(start);
 
   for (const ConvexPolygon& polygon : variant.interval_polygons) {
     if (!shifted_polygon_inside_bounds(
             polygon,
-            static_cast<double>(start.x),
-            static_cast<double>(start.y),
+            start_x,
+            start_y,
             min_x,
             min_y,
             max_x,
@@ -113,8 +222,8 @@ bool CollisionChecker::statically_valid(
     for (const ConvexPolygon& obstacle : obstacle_polygons_) {
       if (shifted_polygons_intersect(
               polygon,
-              static_cast<double>(start.x),
-              static_cast<double>(start.y),
+              start_x,
+              start_y,
               obstacle,
               0.0,
               0.0)) {
@@ -168,6 +277,10 @@ bool CollisionChecker::conflict(
       primitives_.variant(left_primitive, left_start.heading);
   const PrimitiveVariant& right =
       primitives_.variant(right_primitive, right_start.heading);
+  const double left_x = problem_.center_x_cells(left_start);
+  const double left_y = problem_.center_y_cells(left_start);
+  const double right_x = problem_.center_x_cells(right_start);
+  const double right_y = problem_.center_y_cells(right_start);
   const auto finish = [&](bool result) {
     if (problem_.search.use_conflict_cache) {
       conflict_cache_.emplace(key, result);
@@ -179,11 +292,11 @@ bool CollisionChecker::conflict(
     ++whole_step_aabb_tests_;
     if (!shifted_bounds_intersect(
             left.whole_step_bounds,
-            static_cast<double>(left_start.x),
-            static_cast<double>(left_start.y),
+            left_x,
+            left_y,
             right.whole_step_bounds,
-            static_cast<double>(right_start.x),
-            static_cast<double>(right_start.y))) {
+            right_x,
+            right_y)) {
       ++whole_step_aabb_rejects_;
       return finish(false);
     }
@@ -192,11 +305,11 @@ bool CollisionChecker::conflict(
     ++polygon_sat_tests_;
     return finish(shifted_polygons_intersect(
         left.whole_step_polygon,
-        static_cast<double>(left_start.x),
-        static_cast<double>(left_start.y),
+        left_x,
+        left_y,
         right.whole_step_polygon,
-        static_cast<double>(right_start.x),
-        static_cast<double>(right_start.y)));
+        right_x,
+        right_y));
   }
   if (left.interval_bounds.size() != left.interval_polygons.size() ||
       right.interval_bounds.size() != right.interval_polygons.size()) {
@@ -216,21 +329,21 @@ bool CollisionChecker::conflict(
       ++interval_aabb_tests_;
       if (!shifted_bounds_intersect(
               left.interval_bounds[left_interval],
-              static_cast<double>(left_start.x),
-              static_cast<double>(left_start.y),
+              left_x,
+              left_y,
               right.interval_bounds[right_interval],
-              static_cast<double>(right_start.x),
-              static_cast<double>(right_start.y))) {
+              right_x,
+              right_y)) {
         ++interval_aabb_rejects_;
       } else {
         ++polygon_sat_tests_;
         if (shifted_polygons_intersect(
                 left.interval_polygons[left_interval],
-                static_cast<double>(left_start.x),
-                static_cast<double>(left_start.y),
+                left_x,
+                left_y,
                 right.interval_polygons[right_interval],
-                static_cast<double>(right_start.x),
-                static_cast<double>(right_start.y))) {
+                right_x,
+                right_y)) {
           return finish(true);
         }
       }
@@ -238,11 +351,11 @@ bool CollisionChecker::conflict(
       ++polygon_sat_tests_;
       if (shifted_polygons_intersect(
               left.interval_polygons[left_interval],
-              static_cast<double>(left_start.x),
-              static_cast<double>(left_start.y),
+              left_x,
+              left_y,
               right.interval_polygons[right_interval],
-              static_cast<double>(right_start.x),
-              static_cast<double>(right_start.y))) {
+              right_x,
+              right_y)) {
         return finish(true);
       }
     }
@@ -508,6 +621,10 @@ std::vector<PrimitiveId> CandidateProvider::compute(
   const bool at_goal = state == problem_.agents.at(agent).goal;
 
   for (const Primitive& primitive : primitives_.primitives()) {
+    if (problem_.primitive_config.use_acceleration_constraints &&
+        !primitive.kinematically_feasible) {
+      continue;
+    }
     const TransitionEntry transition = transitions_.lookup(state, primitive.id);
     if (!transition.valid) continue;
     const int wait_penalty =
@@ -835,6 +952,8 @@ std::vector<int> Planner::priority_order(
 
 std::optional<Planner::JointMove> Planner::next_joint_move(
     const std::vector<State>& configuration,
+    const std::vector<PrimitiveId>& previous_primitives,
+    const std::vector<ScalarInterval>& current_boundary_rates,
     const std::vector<int>& order,
     PIBT& pibt,
     Deadline& deadline,
@@ -891,11 +1010,20 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
 
     std::vector<PrimitiveId> selected;
     std::vector<State> next;
+    std::vector<ScalarInterval> next_boundary_rates;
     bool unique_result = false;
     if (pibt.plan(configuration, order, node.forced, selected, next)) {
       const std::string combo = primitive_combo_key(selected);
       if (generator.seen_joint_moves.insert(combo).second) {
-        unique_result = true;
+        unique_result = !violates_kinematic_no_good(
+            configuration, previous_primitives, selected, next) &&
+            propagate_joint_boundary_rates(
+                configuration,
+                previous_primitives,
+                current_boundary_rates,
+                selected,
+                next,
+                next_boundary_rates);
       } else {
         ++instrumentation_.joint_move_duplicates;
       }
@@ -905,7 +1033,10 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
       if (unique_result) {
         ++generator.yielded;
         ++instrumentation_.joint_moves_generated;
-        return JointMove{std::move(selected), std::move(next)};
+        return JointMove{
+            std::move(selected),
+            std::move(next),
+            std::move(next_boundary_rates)};
       }
       continue;
     }
@@ -921,12 +1052,43 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
             static_cast<std::size_t>(agent),
             configuration[static_cast<std::size_t>(agent)],
             candidate_scratch);
+    std::vector<PrimitiveId> reachable_candidates;
+    const std::vector<PrimitiveId>* available_candidates = &candidate_list;
+    if (problem_.primitive_config.use_acceleration_constraints) {
+      reachable_candidates.reserve(candidate_list.size());
+      for (PrimitiveId candidate : candidate_list) {
+        ScalarInterval incoming{0.0, 0.0};
+        if (!previous_primitives.empty()) {
+          const PrimitiveId previous = previous_primitives[
+              static_cast<std::size_t>(agent)];
+          const PrimitiveVariant& previous_variant = primitives_.variant(
+              previous,
+              positive_mod(
+                  configuration[static_cast<std::size_t>(agent)].heading -
+                      primitives_.primitive(previous).d_heading,
+                  problem_.grid.heading_bins));
+          const PrimitiveVariant& candidate_variant = primitives_.variant(
+              candidate,
+              configuration[static_cast<std::size_t>(agent)].heading);
+          incoming = connect_boundary_rates(
+              current_boundary_rates[static_cast<std::size_t>(agent)],
+              previous_variant.end_twist_per_progress_rate,
+              candidate_variant.start_twist_per_progress_rate);
+        }
+        if (!propagate_primitive_rates(
+                 primitives_.primitive(candidate), incoming)
+                 .empty()) {
+          reachable_candidates.push_back(candidate);
+        }
+      }
+      available_candidates = &reachable_candidates;
+    }
     const std::size_t limit = std::min(
         generator.candidate_width,
-        candidate_list.size());
+        available_candidates->size());
 
     std::vector<PrimitiveId> diversified;
-    const std::vector<PrimitiveId>* alternatives = &candidate_list;
+    const std::vector<PrimitiveId>* alternatives = available_candidates;
     if (problem_.search.diversify_candidates &&
         primitives_.has_off_center_pivots() && limit > 0) {
       diversified.reserve(limit);
@@ -952,7 +1114,7 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
         return Family::kCenterRotation;
       };
       std::vector<Family> used_families;
-      for (PrimitiveId id : candidate_list) {
+      for (PrimitiveId id : *available_candidates) {
         const Family candidate_family = family(id);
         if (std::find(
                 used_families.begin(), used_families.end(), candidate_family) !=
@@ -984,10 +1146,215 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
     if (unique_result) {
       ++generator.yielded;
       ++instrumentation_.joint_moves_generated;
-      return JointMove{std::move(selected), std::move(next)};
+      return JointMove{
+          std::move(selected),
+          std::move(next),
+          std::move(next_boundary_rates)};
     }
   }
   return std::nullopt;
+}
+
+bool Planner::violates_kinematic_no_good(
+    const std::vector<State>& configuration,
+    const std::vector<PrimitiveId>& previous_primitives,
+    const std::vector<PrimitiveId>& selected,
+    const std::vector<State>& next) const {
+  if (!problem_.primitive_config.use_acceleration_constraints) {
+    return false;
+  }
+  for (std::size_t agent = 0; agent < selected.size(); ++agent) {
+    const int previous = previous_primitives.empty()
+                             ? -1
+                             : static_cast<int>(previous_primitives[agent]);
+    if (kinematic_no_goods_.count(KinematicNoGood{
+            previous,
+            static_cast<int>(selected[agent]),
+            configuration[agent].heading,
+            -1}) != 0) {
+      return true;
+    }
+  }
+  if (is_goal(next)) {
+    for (std::size_t agent = 0; agent < selected.size(); ++agent) {
+      if (kinematic_no_goods_.count(KinematicNoGood{
+              static_cast<int>(selected[agent]),
+              -2,
+              next[agent].heading,
+              static_cast<int>(agent)}) != 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool Planner::propagate_joint_boundary_rates(
+    const std::vector<State>& configuration,
+    const std::vector<PrimitiveId>& previous_primitives,
+    const std::vector<ScalarInterval>& current_boundary_rates,
+    const std::vector<PrimitiveId>& selected,
+    const std::vector<State>& next,
+    std::vector<ScalarInterval>& next_boundary_rates) const {
+  if (!problem_.primitive_config.use_acceleration_constraints) {
+    next_boundary_rates.clear();
+    return true;
+  }
+  next_boundary_rates.resize(selected.size());
+  const bool terminal = is_goal(next);
+  for (std::size_t agent = 0; agent < selected.size(); ++agent) {
+    ScalarInterval incoming{0.0, 0.0};
+    if (!previous_primitives.empty()) {
+      const PrimitiveId previous_id = previous_primitives[agent];
+      const PrimitiveVariant& previous_variant = primitives_.variant(
+          previous_id,
+          positive_mod(
+              configuration[agent].heading -
+                  primitives_.primitive(previous_id).d_heading,
+              problem_.grid.heading_bins));
+      const PrimitiveVariant& selected_variant = primitives_.variant(
+          selected[agent], configuration[agent].heading);
+      incoming = connect_boundary_rates(
+          current_boundary_rates[agent],
+          previous_variant.end_twist_per_progress_rate,
+          selected_variant.start_twist_per_progress_rate);
+    }
+    const ScalarInterval outgoing = propagate_primitive_rates(
+        primitives_.primitive(selected[agent]), incoming);
+    if (outgoing.empty() || (terminal && !outgoing.contains(0.0))) {
+      return false;
+    }
+    next_boundary_rates[agent] = outgoing;
+  }
+  return true;
+}
+
+ScalarInterval Planner::propagate_primitive_rates(
+    const Primitive& primitive,
+    const ScalarInterval& incoming) const {
+  if (primitive.progress_coordinate == ProgressCoordinate::kStationary) {
+    return incoming.contains(0.0)
+               ? ScalarInterval{0.0, 0.0}
+               : ScalarInterval{};
+  }
+  if (!primitive.kinematically_feasible) return ScalarInterval{};
+  return propagate_cubic_boundary_rates(
+      primitive.progress_envelope.displacement,
+      primitive.progress_envelope.duration,
+      primitive.kinematic_max_rate,
+      primitive.kinematic_max_acceleration,
+      incoming);
+}
+
+ScalarInterval Planner::local_candidate_end_rates(
+    const State& connection_state,
+    int previous_primitive,
+    PrimitiveId candidate_id) const {
+  ScalarInterval candidate_incoming{0.0, 0.0};
+  if (previous_primitive >= 0) {
+    const Primitive& previous = primitives_.primitive(
+        static_cast<PrimitiveId>(previous_primitive));
+    const ScalarInterval arbitrary_previous_start =
+        previous.progress_coordinate == ProgressCoordinate::kStationary
+            ? ScalarInterval{0.0, 0.0}
+            : ScalarInterval{0.0, previous.kinematic_max_rate};
+    const ScalarInterval previous_end = propagate_primitive_rates(
+        previous, arbitrary_previous_start);
+    if (previous_end.empty()) return ScalarInterval{};
+    const int previous_start_heading = positive_mod(
+        connection_state.heading - previous.d_heading,
+        problem_.grid.heading_bins);
+    const PrimitiveVariant& previous_variant = primitives_.variant(
+        static_cast<PrimitiveId>(previous_primitive),
+        previous_start_heading);
+    const PrimitiveVariant& candidate_variant = primitives_.variant(
+        candidate_id, connection_state.heading);
+    candidate_incoming = connect_boundary_rates(
+        previous_end,
+        previous_variant.end_twist_per_progress_rate,
+        candidate_variant.start_twist_per_progress_rate);
+  }
+  return propagate_primitive_rates(
+      primitives_.primitive(candidate_id), candidate_incoming);
+}
+
+Planner::KinematicValidation Planner::validate_kinematics(
+    const SearchAttempt& attempt) const {
+  for (std::size_t agent = 0; agent < attempt.primitives.size(); ++agent) {
+    const auto& primitive_ids = attempt.primitives[agent];
+    const auto& states = attempt.states[agent];
+    ScalarInterval incoming_rate{0.0, 0.0};
+    for (std::size_t i = 0; i < primitive_ids.size(); ++i) {
+      const Primitive& primitive = primitives_.primitive(primitive_ids[i]);
+      if (primitive.progress_coordinate == ProgressCoordinate::kStationary) {
+        if (!incoming_rate.contains(0.0)) {
+          return KinematicValidation{false, agent, i};
+        }
+        const ScalarInterval outgoing_rate{0.0, 0.0};
+        if (i + 1 == primitive_ids.size()) continue;
+        const PrimitiveVariant& current_variant = primitives_.variant(
+            primitive_ids[i], states[i].heading);
+        const PrimitiveVariant& next_variant = primitives_.variant(
+            primitive_ids[i + 1], states[i + 1].heading);
+        incoming_rate = connect_boundary_rates(
+            outgoing_rate,
+            current_variant.end_twist_per_progress_rate,
+            next_variant.start_twist_per_progress_rate);
+        continue;
+      }
+      const ScalarInterval outgoing_rate = propagate_primitive_rates(
+          primitive, incoming_rate);
+      if (outgoing_rate.empty()) {
+        return KinematicValidation{false, agent, i};
+      }
+      if (i + 1 == primitive_ids.size()) {
+        if (!outgoing_rate.contains(0.0)) {
+          return KinematicValidation{false, agent, primitive_ids.size()};
+        }
+        continue;
+      }
+
+      const PrimitiveVariant& current_variant = primitives_.variant(
+          primitive_ids[i], states[i].heading);
+      const PrimitiveVariant& next_variant = primitives_.variant(
+          primitive_ids[i + 1], states[i + 1].heading);
+      incoming_rate = connect_boundary_rates(
+          outgoing_rate,
+          current_variant.end_twist_per_progress_rate,
+          next_variant.start_twist_per_progress_rate);
+      if (incoming_rate.empty()) {
+        return KinematicValidation{false, agent, i + 1};
+      }
+    }
+  }
+  return KinematicValidation{};
+}
+
+bool Planner::add_kinematic_no_good(
+    const SearchAttempt& attempt,
+    const KinematicValidation& failure) {
+  const auto& primitive_ids = attempt.primitives.at(failure.agent);
+  const auto& states = attempt.states.at(failure.agent);
+  if (primitive_ids.empty()) return false;
+
+  KinematicNoGood cut;
+  if (failure.primitive_index == 0) {
+    cut.previous_primitive = -1;
+    cut.next_primitive = static_cast<int>(primitive_ids.front());
+    cut.connection_heading = states.front().heading;
+  } else if (failure.primitive_index >= primitive_ids.size()) {
+    cut.previous_primitive = static_cast<int>(primitive_ids.back());
+    cut.next_primitive = -2;
+    cut.connection_heading = states.back().heading;
+    cut.terminal_agent = static_cast<int>(failure.agent);
+  } else {
+    cut.previous_primitive = static_cast<int>(
+        primitive_ids[failure.primitive_index - 1]);
+    cut.next_primitive = static_cast<int>(
+        primitive_ids[failure.primitive_index]);
+    cut.connection_heading = states[failure.primitive_index].heading;
+  }
+  return kinematic_no_goods_.insert(cut).second;
 }
 
 bool Planner::generator_has_more(
@@ -1043,6 +1410,10 @@ Planner::SearchAttempt Planner::weighted_search(
   start_node.g = 0.0;
   start_node.h = heuristic(start);
   start_node.depth = 0;
+  if (problem_.primitive_config.use_acceleration_constraints) {
+    start_node.boundary_rates.assign(
+        problem_.agents.size(), ScalarInterval{0.0, 0.0});
+  }
   nodes.push_back(std::move(start_node));
 
   std::priority_queue<QueueEntry> open;
@@ -1056,8 +1427,8 @@ Planner::SearchAttempt Planner::weighted_search(
   instrumentation_.max_open_size = std::max<std::uint64_t>(
       instrumentation_.max_open_size, open.size());
 
-  std::unordered_map<std::vector<State>, double, JointStateHash> best_g;
-  best_g[start] = 0.0;
+  std::unordered_map<SearchKey, double, SearchKeyHash> best_g;
+  best_g[make_search_key(start, {}, nodes[0].boundary_rates)] = 0.0;
 
   PIBT pibt(
       problem_, primitives_, collision_checker_, transitions_, candidates_, random_,
@@ -1071,7 +1442,10 @@ Planner::SearchAttempt Planner::weighted_search(
     open.pop();
     const SearchNode& current_ref =
         nodes[static_cast<std::size_t>(entry.node_index)];
-    const auto best = best_g.find(current_ref.configuration);
+    const auto best = best_g.find(make_search_key(
+        current_ref.configuration,
+        current_ref.incoming,
+        current_ref.boundary_rates));
     if (best == best_g.end() || current_ref.g > best->second + kEpsilon) {
       continue;
     }
@@ -1107,7 +1481,12 @@ Planner::SearchAttempt Planner::weighted_search(
          generated < successor_quota && !deadline.expired();
          ++generated) {
       std::optional<JointMove> move = next_joint_move(
-          configuration, order, pibt, deadline,
+          configuration,
+          current_node.incoming,
+          current_node.boundary_rates,
+          order,
+          pibt,
+          deadline,
           *current_node.successor_generator);
       if (!move.has_value()) break;
       joint_moves.push_back(std::move(*move));
@@ -1127,24 +1506,27 @@ Planner::SearchAttempt Planner::weighted_search(
     const double step_cost = edge_cost(configuration);
 
     for (const auto& move : joint_moves) {
-      const std::vector<PrimitiveId>& incoming = move.first;
-      const std::vector<State>& next = move.second;
+      const std::vector<PrimitiveId>& incoming = move.primitives;
+      const std::vector<State>& next = move.next;
       if (next == configuration) continue;
 
       const double next_g = current_g + step_cost;
       const double next_h = heuristic(next);
       if (next_g + next_h >= incumbent_cost - kEpsilon) continue;
 
-      const auto found = best_g.find(next);
+      const SearchKey next_key = make_search_key(
+          next, incoming, move.boundary_rates);
+      const auto found = best_g.find(next_key);
       if (found != best_g.end() && found->second <= next_g + kEpsilon) {
         continue;
       }
-      best_g[next] = next_g;
+      best_g[next_key] = next_g;
 
       SearchNode child;
       child.configuration = next;
       child.parent = entry.node_index;
       child.incoming = incoming;
+      child.boundary_rates = move.boundary_rates;
       child.g = next_g;
       child.h = next_h;
       child.depth = current_depth + 1;
@@ -1168,8 +1550,27 @@ void Planner::publish_solution(
     const SearchAttempt& attempt,
     double weight,
     Deadline& deadline,
-    Solution& solution) const {
+    Solution& solution) {
   if (!attempt.success || attempt.cost >= solution.cost - kEpsilon) return;
+
+  if (problem_.primitive_config.use_acceleration_constraints) {
+    ++kinematic_validation_calls_;
+    const KinematicValidation validation = validate_kinematics(attempt);
+    if (!validation.feasible) {
+      ++kinematic_validation_failures_;
+      kinematic_restart_requested_ = true;
+      const bool inserted = add_kinematic_no_good(attempt, validation);
+      std::cout << "kinematic candidate rejected: agent="
+                << validation.agent
+                << " boundary=" << validation.primitive_index
+                << " cut=" << (inserted ? "added" : "duplicate")
+                << " search_ms=" << deadline.elapsed_ms() << '\n';
+      if (!inserted) {
+        kinematic_restart_blocked_ = true;
+      }
+      return;
+    }
+  }
 
   solution.success = true;
   solution.cost = attempt.cost;
@@ -1192,7 +1593,7 @@ void Planner::publish_solution_from_node(
     int goal_index,
     double weight,
     Deadline& deadline,
-    Solution& solution) const {
+    Solution& solution) {
   if (goal_index < 0) return;
   publish_solution(reconstruct(nodes, goal_index), weight, deadline, solution);
 }
@@ -1209,6 +1610,8 @@ void Planner::solve_repeated_weighted(
     const SearchAttempt attempt = weighted_search(
         weight, solution.cost, deadline, expanded_nodes);
     publish_solution(attempt, weight, deadline, solution);
+
+    if (kinematic_restart_requested_) return;
 
     if (!problem_.search.anytime) break;
     if (weight <= problem_.search.minimum_weight + kEpsilon) break;
@@ -1233,10 +1636,15 @@ void Planner::solve_ara_star(
   start_node.g = 0.0;
   start_node.h = heuristic(start);
   start_node.depth = 0;
+  if (problem_.primitive_config.use_acceleration_constraints) {
+    start_node.boundary_rates.assign(
+        problem_.agents.size(), ScalarInterval{0.0, 0.0});
+  }
   nodes.push_back(std::move(start_node));
 
-  std::unordered_map<std::vector<State>, int, JointStateHash> node_index;
-  node_index.emplace(start, 0);
+  std::unordered_map<SearchKey, int, SearchKeyHash> node_index;
+  node_index.emplace(
+      make_search_key(start, {}, nodes[0].boundary_rates), 0);
 
   std::priority_queue<QueueEntry> open;
   std::uint64_t serial = 0;
@@ -1273,6 +1681,7 @@ void Planner::solve_ara_star(
   int goal_index = is_goal(start) ? 0 : -1;
   if (goal_index == 0) {
     publish_solution_from_node(nodes, goal_index, weight, deadline, solution);
+    if (kinematic_restart_requested_) return;
   }
 
   PIBT pibt(
@@ -1325,7 +1734,12 @@ void Planner::solve_ara_star(
            generated < successor_quota && !deadline.expired();
            ++generated) {
         std::optional<JointMove> move = next_joint_move(
-            configuration, order, pibt, deadline,
+            configuration,
+            current_node.incoming,
+            current_node.boundary_rates,
+            order,
+            pibt,
+            deadline,
             *current_node.successor_generator);
         if (!move.has_value()) break;
         joint_moves.push_back(std::move(*move));
@@ -1336,8 +1750,8 @@ void Planner::solve_ara_star(
       const double step_cost = edge_cost(configuration);
 
       for (const auto& move : joint_moves) {
-        const std::vector<PrimitiveId>& incoming = move.first;
-        const std::vector<State>& next = move.second;
+        const std::vector<PrimitiveId>& incoming = move.primitives;
+        const std::vector<State>& next = move.next;
         if (next == configuration) continue;
 
         const double next_g = current_g + step_cost;
@@ -1345,14 +1759,16 @@ void Planner::solve_ara_star(
         if (next_g + next_h >= solution.cost - kEpsilon) continue;
 
         int next_index = -1;
-        const auto found = node_index.find(next);
+        const SearchKey next_key = make_search_key(
+            next, incoming, move.boundary_rates);
+        const auto found = node_index.find(next_key);
         if (found == node_index.end()) {
           SearchNode child;
           child.configuration = next;
           child.h = next_h;
           nodes.push_back(std::move(child));
           next_index = static_cast<int>(nodes.size() - 1);
-          node_index.emplace(next, next_index);
+          node_index.emplace(next_key, next_index);
         } else {
           next_index = found->second;
         }
@@ -1363,6 +1779,7 @@ void Planner::solve_ara_star(
         child.g = next_g;
         child.parent = entry.node_index;
         child.incoming = incoming;
+        child.boundary_rates = move.boundary_rates;
         child.depth = current_depth + 1;
         child.successor_generator.reset();
         child.expansion_counted = false;
@@ -1377,6 +1794,7 @@ void Planner::solve_ara_star(
           goal_index = next_index;
           publish_solution_from_node(
               nodes, goal_index, weight, deadline, solution);
+          if (kinematic_restart_requested_) return;
         }
       }
 
@@ -1427,17 +1845,34 @@ Solution Planner::solve() {
   candidates_.reset_runtime_stats();
   collision_checker_.reset_runtime_stats();
   instrumentation_ = SearchInstrumentation{};
+  kinematic_no_goods_.clear();
+  kinematic_restart_requested_ = false;
+  kinematic_restart_blocked_ = false;
+  kinematic_validation_calls_ = 0;
+  kinematic_validation_failures_ = 0;
+  kinematic_search_restarts_ = 0;
 
   Deadline deadline(problem_.search.time_limit_ms);
   Solution solution;
   solution.objective = problem_.search.objective;
 
   std::uint64_t expanded_nodes = 0;
-  if (problem_.search.use_ara_star) {
-    solve_ara_star(deadline, solution, expanded_nodes);
-  } else {
-    solve_repeated_weighted(deadline, solution, expanded_nodes);
-  }
+  do {
+    kinematic_restart_requested_ = false;
+    if (problem_.search.use_ara_star) {
+      solve_ara_star(deadline, solution, expanded_nodes);
+    } else {
+      solve_repeated_weighted(deadline, solution, expanded_nodes);
+    }
+    if (kinematic_restart_requested_ &&
+        !kinematic_restart_blocked_ &&
+        !deadline.expired() &&
+        expanded_nodes < problem_.search.max_expansions) {
+      ++kinematic_search_restarts_;
+      continue;
+    }
+    break;
+  } while (true);
 
   solution.elapsed_ms = deadline.elapsed_ms();
   solution.stats.primitive_collision_precompute_ms =
@@ -1477,6 +1912,14 @@ Solution Planner::solve() {
       problem_.search.initial_candidate_width;
   solution.stats.per_primitive_intervals_enabled =
       problem_.search.use_per_primitive_intervals;
+  solution.stats.multiple_rotation_amounts_enabled =
+      problem_.primitive_config.use_multiple_rotation_amounts;
+  solution.stats.acceleration_constraints_enabled =
+      problem_.primitive_config.use_acceleration_constraints;
+  solution.stats.pivot_anchor_lattice_enabled =
+      problem_.primitive_config.use_pivot_anchor_lattice;
+  solution.stats.active_rotation_amount_count =
+      primitives_.active_rotation_amount_count();
   solution.stats.collision_mode = problem_.search.collision_mode;
   solution.stats.max_boundary_travel_per_interval_m =
       problem_.search.max_boundary_travel_per_interval_m;
@@ -1531,6 +1974,11 @@ Solution Planner::solve() {
   solution.stats.interval_aabb_rejects =
       collision_checker_.interval_aabb_rejects();
   solution.stats.polygon_sat_tests = collision_checker_.polygon_sat_tests();
+  solution.stats.kinematic_validation_calls = kinematic_validation_calls_;
+  solution.stats.kinematic_validation_failures =
+      kinematic_validation_failures_;
+  solution.stats.kinematic_search_restarts = kinematic_search_restarts_;
+  solution.stats.kinematic_no_good_count = kinematic_no_goods_.size();
 
   return solution;
 }

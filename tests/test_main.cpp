@@ -1,9 +1,11 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <set>
 
 #include "geometry.hpp"
 #include "io.hpp"
+#include "kinematics.hpp"
 #include "planner.hpp"
 #include "yaml.hpp"
 
@@ -20,7 +22,7 @@ lacam_primitive::Problem make_problem(
   problem.grid = GridSpec{0.1, 0.0, 0.0, 12, 8, 4, 0.2};
   problem.robot = RobotSpec{0.08, 0.08, 1.0, 8.0, 0.0};
   problem.primitive_config.translation_cells = {1, 2};
-  problem.primitive_config.rotation_bins = 1;
+  problem.primitive_config.rotation_bin_counts = {1};
   problem.search.time_limit_ms = 500.0;
   problem.search.anytime = true;
   problem.search.initial_weight = 2.0;
@@ -100,6 +102,10 @@ void check_solution(
   assert(solution.stats.lazy_successors_enabled);
   assert(solution.stats.progressive_widening_enabled);
   assert(solution.stats.per_primitive_intervals_enabled);
+  assert(!solution.stats.multiple_rotation_amounts_enabled);
+  assert(!solution.stats.acceleration_constraints_enabled);
+  assert(!solution.stats.pivot_anchor_lattice_enabled);
+  assert(solution.stats.active_rotation_amount_count == 1);
   assert(solution.stats.collision_mode == collision_mode);
   assert(solution.stats.max_boundary_travel_per_interval_m ==
          problem.search.max_boundary_travel_per_interval_m);
@@ -171,6 +177,95 @@ int main() {
   assert(!shifted_bounds_intersect(
       square_bounds, 0.0, 0.0, square_bounds, 2.0, 0.0));
 
+  // Boundary speeds remain intervals: the planner need not commit to one
+  // speed before the downstream continuous trajectory layer runs.
+  const ConstantAccelerationEnvelope speed_envelope =
+      constant_acceleration_envelope(0.1, 0.2, 1.0, 2.0);
+  assert(speed_envelope.feasible());
+  const ScalarInterval cubic_rest_to_rest =
+      propagate_cubic_boundary_rates(
+          0.5, 0.5, 3.0, 19.6, ScalarInterval{0.0, 0.0});
+  assert(cubic_rest_to_rest.contains(0.0));
+  const ScalarInterval cubic_too_fast =
+      propagate_cubic_boundary_rates(
+          0.5, 0.2, 3.0, 19.6, ScalarInterval{0.0, 0.0});
+  assert(!cubic_too_fast.contains(0.0));
+  assert(std::abs(speed_envelope.start_velocity.lower - 0.3) < 1e-12);
+  assert(std::abs(speed_envelope.start_velocity.upper - 0.7) < 1e-12);
+  assert(std::abs(speed_envelope.end_velocity.lower - 0.3) < 1e-12);
+  assert(std::abs(speed_envelope.end_velocity.upper - 0.7) < 1e-12);
+  const ScalarInterval stopped_to_moving = propagate(
+      constant_acceleration_envelope(0.1, 0.2, 1.0, 5.0),
+      ScalarInterval{0.0, 0.0});
+  assert(stopped_to_moving.contains(1.0));
+  assert(std::abs(stopped_to_moving.lower - 1.0) < 1e-12);
+  assert(std::abs(stopped_to_moving.upper - 1.0) < 1e-12);
+
+  const double corner_acceleration = max_rectangle_corner_acceleration(
+      Point2{0.0, 0.0}, 0.37, 2.0, 0.0, 1.0, 0.5);
+  const double expected_corner_acceleration =
+      4.0 * 0.5 * std::hypot(1.0, 0.5);
+  assert(std::abs(corner_acceleration - expected_corner_acceleration) < 1e-12);
+  assert(std::abs(
+             conservative_rectangle_acceleration_bound(
+                 Point2{0.0, 0.0}, 2.0, 0.0, 1.0, 0.5) -
+             expected_corner_acceleration) < 1e-12);
+
+  // An eight-bin heading lattice can expose several rotation amounts at the
+  // same dt. Center-pivot endpoints remain on the integer position lattice.
+  Problem multi_rotation = make_problem(true, true, true);
+  multi_rotation.grid.heading_bins = 8;
+  multi_rotation.robot.max_angular_velocity = 20.0;
+  multi_rotation.primitive_config.rotation_bin_counts = {1, 2, 3};
+  multi_rotation.primitive_config.use_multiple_rotation_amounts = true;
+  multi_rotation.primitive_config.rotation_pivot_offsets_cells = {0};
+  const PrimitiveTable multi_rotation_primitives(multi_rotation);
+  std::set<int> positive_rotation_amounts;
+  for (const Primitive& primitive : multi_rotation_primitives.primitives()) {
+    if (primitive.d_heading > 0) {
+      positive_rotation_amounts.insert(primitive.d_heading);
+      assert(primitive.progress_coordinate ==
+             ProgressCoordinate::kRotationRadians);
+      assert(primitive.progress_envelope.feasible());
+      const PrimitiveVariant& variant =
+          multi_rotation_primitives.variant(primitive.id, 0);
+      assert(std::abs(variant.start_twist_per_progress_rate.vx) < 1e-12);
+      assert(std::abs(variant.start_twist_per_progress_rate.vy) < 1e-12);
+      assert(std::abs(variant.start_twist_per_progress_rate.omega - 1.0) <
+             1e-12);
+    }
+  }
+  assert((positive_rotation_amounts == std::set<int>{1, 2, 3}));
+  assert(multi_rotation_primitives.max_rotation_bins() == 3);
+
+  Problem single_rotation = multi_rotation;
+  single_rotation.primitive_config.use_multiple_rotation_amounts = false;
+  const PrimitiveTable single_rotation_primitives(single_rotation);
+  std::set<int> single_rotation_amounts;
+  for (const Primitive& primitive : single_rotation_primitives.primitives()) {
+    if (primitive.d_heading > 0) {
+      single_rotation_amounts.insert(primitive.d_heading);
+    }
+  }
+  assert((single_rotation_amounts == std::set<int>{1}));
+  assert(single_rotation_primitives.active_rotation_amount_count() == 1);
+
+  Problem acceleration_toggle = make_problem(true, true, true);
+  acceleration_toggle.robot.max_linear_acceleration = 2.0;
+  acceleration_toggle.primitive_config.use_acceleration_constraints = true;
+  const PrimitiveTable constrained_primitives(acceleration_toggle);
+  acceleration_toggle.primitive_config.use_acceleration_constraints = false;
+  const PrimitiveTable unconstrained_primitives(acceleration_toggle);
+  for (const Primitive& constrained : constrained_primitives.primitives()) {
+    if (constrained.dx != 1 || constrained.dy != 0) continue;
+    const Primitive& unconstrained =
+        unconstrained_primitives.primitive(constrained.id);
+    assert(std::abs(constrained.progress_envelope.start_velocity.lower - 0.3) <
+           1e-12);
+    assert(std::abs(unconstrained.progress_envelope.start_velocity.lower) <
+           1e-12);
+  }
+
   // A repeated relative-state query is answered by the pairwise conflict
   // cache; the second call must not execute another AABB/SAT pipeline.
   Problem cache_problem = make_problem(true, true, true);
@@ -215,7 +310,7 @@ int main() {
   coarse.grid = GridSpec{0.1, 0.0, 0.0, 26, 10, 4, 0.2};
   coarse.robot = RobotSpec{0.825, 0.275, 3.0, 8.0, 0.01};
   coarse.primitive_config.translation_cells = {1, 2, 3, 4, 5};
-  coarse.primitive_config.rotation_bins = 1;
+  coarse.primitive_config.rotation_bin_counts = {1};
   coarse.primitive_config.rotation_pivot_offsets_cells = {0};
   PrimitiveTable coarse_primitives(coarse);
   const std::size_t fine_interval_count = coarse_primitives.interval_count();
@@ -237,6 +332,189 @@ int main() {
   // resolutions. Internal cell deltas differ, but all physical primitive
   // endpoints and collision results must agree.
   const std::string source_dir = LACAM_PRIMITIVE_SOURCE_DIR;
+  const Problem rotation_45_problem =
+      load_problem(source_dir + "/examples/kinematic_rotation_45.yaml");
+  assert(rotation_45_problem.grid.heading_bins == 8);
+  assert((rotation_45_problem.primitive_config.rotation_bin_counts ==
+          std::vector<int>{1, 2, 3}));
+  assert(rotation_45_problem.robot.max_linear_acceleration == 2.0);
+  assert(rotation_45_problem.robot.max_angular_acceleration == 20.0);
+  assert(rotation_45_problem.robot.max_body_point_acceleration == 30.0);
+  assert(rotation_45_problem.primitive_config.use_multiple_rotation_amounts);
+  assert(rotation_45_problem.primitive_config.use_acceleration_constraints);
+  assert(rotation_45_problem.primitive_config.use_pivot_anchor_lattice);
+  assert(rotation_45_problem.grid.pose_snap_tolerance_m == 0.02);
+  assert((rotation_45_problem.agents.front().start == State{4, 6, 0}));
+  assert((rotation_45_problem.agents.front().goal == State{16, 6, 3}));
+  assert(std::hypot(
+             rotation_45_problem.world_x(
+                 rotation_45_problem.agents.front().goal) - 1.6,
+             rotation_45_problem.world_y(
+                 rotation_45_problem.agents.front().goal) - 0.6) <=
+         rotation_45_problem.grid.pose_snap_tolerance_m);
+  bool rejected_excessive_pose_snap = false;
+  try {
+    (void)load_problem(source_dir + "/tests/invalid_pose_snap.yaml");
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    rejected_excessive_pose_snap =
+        message.find("nearest representable centre") != std::string::npos &&
+        message.find("pose_snap_tolerance_m") != std::string::npos;
+  }
+  assert(rejected_excessive_pose_snap);
+  const PrimitiveTable rotation_45_primitives(rotation_45_problem);
+  assert(rotation_45_primitives.primitives().size() == 19);
+  PrimitiveId rear_ccw_135 = rotation_45_primitives.wait_id();
+  for (const Primitive& primitive : rotation_45_primitives.primitives()) {
+    if (primitive.pivot_rotation && primitive.d_heading == 3) {
+      rear_ccw_135 = primitive.id;
+      break;
+    }
+  }
+  assert(rear_ccw_135 != rotation_45_primitives.wait_id());
+  const State before_anchor_rotation{21, 4, 0};
+  const State after_anchor_rotation = rotation_45_primitives.apply(
+      before_anchor_rotation, rear_ccw_135);
+  assert((after_anchor_rotation == State{16, 6, 3}));
+  const double rear_pivot_before_x =
+      rotation_45_problem.world_x(before_anchor_rotation) - 0.3;
+  const double rear_pivot_before_y =
+      rotation_45_problem.world_y(before_anchor_rotation);
+  const double end_yaw = 3.0 * rotation_45_problem.grid.heading_step();
+  const double rear_pivot_after_x =
+      rotation_45_problem.world_x(after_anchor_rotation) -
+      0.3 * std::cos(end_yaw);
+  const double rear_pivot_after_y =
+      rotation_45_problem.world_y(after_anchor_rotation) -
+      0.3 * std::sin(end_yaw);
+  assert(std::abs(rear_pivot_before_x - rear_pivot_after_x) < 1e-12);
+  assert(std::abs(rear_pivot_before_y - rear_pivot_after_y) < 1e-12);
+  const CollisionChecker rotation_45_collisions(
+      rotation_45_problem, rotation_45_primitives);
+  assert(rotation_45_collisions.statically_valid(
+      before_anchor_rotation, rear_ccw_135));
+
+  Problem rotation_45_fine = rotation_45_problem;
+  rotation_45_fine.grid.cell_size = 0.05;
+  rotation_45_fine.grid.width_cells = 52;
+  rotation_45_fine.grid.height_cells = 24;
+  rotation_45_fine.primitive_config.translation_cells = {2, 4, 6};
+  rotation_45_fine.primitive_config.rotation_pivot_offsets_cells = {-6};
+  const PrimitiveTable rotation_45_fine_primitives(rotation_45_fine);
+  const State fine_before_anchor_rotation{42, 8, 0};
+  const State fine_after_anchor_rotation = rotation_45_fine_primitives.apply(
+      fine_before_anchor_rotation, rear_ccw_135);
+  assert((fine_after_anchor_rotation == State{32, 12, 3}));
+  assert(std::abs(
+             rotation_45_problem.world_x(after_anchor_rotation) -
+             rotation_45_fine.world_x(fine_after_anchor_rotation)) < 1e-12);
+  assert(std::abs(
+             rotation_45_problem.world_y(after_anchor_rotation) -
+             rotation_45_fine.world_y(fine_after_anchor_rotation)) < 1e-12);
+  assert(rotation_45_primitives.interval_count() ==
+         rotation_45_fine_primitives.interval_count());
+
+  // Collision checks use physical heading anchors, not just integer state
+  // indices. Differently headed agents with nearby anchor offsets still
+  // conflict, while a sufficiently distant copy does not.
+  assert(rotation_45_collisions.conflict(
+      State{10, 6, 1}, rotation_45_primitives.wait_id(),
+      State{10, 6, 7}, rotation_45_primitives.wait_id()));
+  assert(!rotation_45_collisions.conflict(
+      State{5, 6, 1}, rotation_45_primitives.wait_id(),
+      State{20, 6, 7}, rotation_45_primitives.wait_id()));
+
+  // Full three-agent regression based on examples/example.yaml. It preserves
+  // all physical start/goal centres and orientations while enabling an
+  // eight-heading, fixed rear-pivot lattice with 45/90/135-degree actions.
+  const Problem anchor_three_agents = load_problem(
+      source_dir + "/tests/example_anchor_45_three_agents.yaml");
+  const Problem anchor_three_agents_fine = load_problem(
+      source_dir + "/tests/example_anchor_45_three_agents_fine.yaml");
+  const Problem base_three_agents =
+      load_problem(source_dir + "/examples/example.yaml");
+  assert(anchor_three_agents.agents.size() == 3);
+  assert(anchor_three_agents_fine.agents.size() == 3);
+  assert(anchor_three_agents.grid.heading_bins == 8);
+  assert(anchor_three_agents.grid.has_pose_reference);
+  assert(anchor_three_agents.grid.pose_reference_cell_size == 0.1);
+  assert(anchor_three_agents.grid.pose_reference_heading_bins == 4);
+  assert(anchor_three_agents.primitive_config.use_pivot_anchor_lattice);
+  assert(anchor_three_agents.primitive_config.use_multiple_rotation_amounts);
+  for (std::size_t i = 0; i < base_three_agents.agents.size(); ++i) {
+    const State& base_start = base_three_agents.agents[i].start;
+    const State& anchor_start = anchor_three_agents.agents[i].start;
+    const State& fine_start = anchor_three_agents_fine.agents[i].start;
+    const State& base_goal = base_three_agents.agents[i].goal;
+    const State& anchor_goal = anchor_three_agents.agents[i].goal;
+    const State& fine_goal = anchor_three_agents_fine.agents[i].goal;
+    assert(std::abs(
+               base_three_agents.world_x(base_start) -
+               anchor_three_agents.world_x(anchor_start)) < 1e-12);
+    assert(std::abs(
+               base_three_agents.world_y(base_start) -
+               anchor_three_agents.world_y(anchor_start)) < 1e-12);
+    assert(std::abs(
+               base_three_agents.world_x(base_goal) -
+               anchor_three_agents.world_x(anchor_goal)) < 1e-12);
+    assert(std::abs(
+               base_three_agents.world_y(base_goal) -
+               anchor_three_agents.world_y(anchor_goal)) < 1e-12);
+    assert(std::abs(
+               anchor_three_agents.world_x(anchor_start) -
+               anchor_three_agents_fine.world_x(fine_start)) < 1e-12);
+    assert(std::abs(
+               anchor_three_agents.world_y(anchor_start) -
+               anchor_three_agents_fine.world_y(fine_start)) < 1e-12);
+    assert(std::abs(
+               anchor_three_agents.world_x(anchor_goal) -
+               anchor_three_agents_fine.world_x(fine_goal)) < 1e-12);
+    assert(std::abs(
+               anchor_three_agents.world_y(anchor_goal) -
+               anchor_three_agents_fine.world_y(fine_goal)) < 1e-12);
+    assert(std::abs(
+               base_start.heading * base_three_agents.grid.heading_step() -
+               anchor_start.heading * anchor_three_agents.grid.heading_step()) <
+           1e-12);
+    assert(std::abs(
+               base_goal.heading * base_three_agents.grid.heading_step() -
+               anchor_goal.heading * anchor_three_agents.grid.heading_step()) <
+           1e-12);
+    assert(std::abs(
+               anchor_start.heading * anchor_three_agents.grid.heading_step() -
+               fine_start.heading *
+                   anchor_three_agents_fine.grid.heading_step()) < 1e-12);
+    assert(std::abs(
+               anchor_goal.heading * anchor_three_agents.grid.heading_step() -
+               fine_goal.heading *
+                   anchor_three_agents_fine.grid.heading_step()) < 1e-12);
+  }
+  const PrimitiveTable anchor_three_primitives(anchor_three_agents);
+  Planner anchor_three_planner(anchor_three_agents);
+  const Solution anchor_three_solution = anchor_three_planner.solve();
+  validate_solution(anchor_three_agents, anchor_three_solution);
+  assert(anchor_three_solution.plans.size() == 3);
+  assert(anchor_three_solution.stats.pivot_anchor_lattice_enabled);
+  assert(anchor_three_solution.stats.active_rotation_amount_count == 2);
+  assert(anchor_three_solution.stats.acceleration_constraints_enabled);
+  assert(anchor_three_solution.stats.kinematic_validation_calls >= 1);
+  assert(anchor_three_solution.stats.kinematic_validation_failures == 0);
+  std::set<int> used_rotation_amounts;
+  for (std::size_t i = 0; i < anchor_three_solution.plans.size(); ++i) {
+    const AgentPlan& plan = anchor_three_solution.plans[i];
+    assert(plan.states.front() == anchor_three_agents.agents[i].start);
+    assert(plan.states.back() == anchor_three_agents.agents[i].goal);
+    assert(plan.states.front().x != plan.states.back().x ||
+           plan.states.front().y != plan.states.back().y);
+    assert(plan.states.front().heading != plan.states.back().heading);
+    for (PrimitiveId primitive_id : plan.primitive_ids) {
+      const int rotation = std::abs(
+          anchor_three_primitives.primitive(primitive_id).d_heading);
+      if (rotation > 0) used_rotation_amounts.insert(rotation);
+    }
+  }
+  assert(used_rotation_amounts.count(1) > 0);
+
   const Problem metric_coarse =
       load_problem(source_dir + "/examples/example.yaml");
   const Problem metric_fine =
@@ -264,19 +542,19 @@ int main() {
   assert(metric_coarse.agents.size() == metric_fine.agents.size());
   for (std::size_t i = 0; i < metric_coarse.agents.size(); ++i) {
     assert(std::abs(
-               metric_coarse.grid.world_x(metric_coarse.agents[i].start.x) -
-               metric_fine.grid.world_x(metric_fine.agents[i].start.x)) < 1e-12);
+               metric_coarse.world_x(metric_coarse.agents[i].start) -
+               metric_fine.world_x(metric_fine.agents[i].start)) < 1e-12);
     assert(std::abs(
-               metric_coarse.grid.world_y(metric_coarse.agents[i].start.y) -
-               metric_fine.grid.world_y(metric_fine.agents[i].start.y)) < 1e-12);
+               metric_coarse.world_y(metric_coarse.agents[i].start) -
+               metric_fine.world_y(metric_fine.agents[i].start)) < 1e-12);
     assert(metric_coarse.agents[i].start.heading ==
            metric_fine.agents[i].start.heading);
     assert(std::abs(
-               metric_coarse.grid.world_x(metric_coarse.agents[i].goal.x) -
-               metric_fine.grid.world_x(metric_fine.agents[i].goal.x)) < 1e-12);
+               metric_coarse.world_x(metric_coarse.agents[i].goal) -
+               metric_fine.world_x(metric_fine.agents[i].goal)) < 1e-12);
     assert(std::abs(
-               metric_coarse.grid.world_y(metric_coarse.agents[i].goal.y) -
-               metric_fine.grid.world_y(metric_fine.agents[i].goal.y)) < 1e-12);
+               metric_coarse.world_y(metric_coarse.agents[i].goal) -
+               metric_fine.world_y(metric_fine.agents[i].goal)) < 1e-12);
     assert(metric_coarse.agents[i].goal.heading ==
            metric_fine.agents[i].goal.heading);
   }

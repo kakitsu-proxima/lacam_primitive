@@ -272,8 +272,11 @@ class Planner {
   [[nodiscard]] Solution solve();
 
  private:
-  using JointMove =
-      std::pair<std::vector<PrimitiveId>, std::vector<State>>;
+  struct JointMove {
+    std::vector<PrimitiveId> primitives;
+    std::vector<State> next;
+    std::vector<ScalarInterval> boundary_rates;
+  };
 
   struct LowLevelConstraintNode {
     std::size_t depth = 0;
@@ -294,6 +297,7 @@ class Planner {
     std::vector<State> configuration;
     int parent = -1;
     std::vector<PrimitiveId> incoming;
+    std::vector<ScalarInterval> boundary_rates;
     double g = std::numeric_limits<double>::infinity();
     double h = 0.0;
     int depth = 0;
@@ -328,6 +332,59 @@ class Planner {
     std::vector<std::vector<PrimitiveId>> primitives;
   };
 
+  struct KinematicNoGood {
+    // -1 is the stationary start boundary; -2 is the stationary terminal
+    // boundary. Terminal cuts are tested only at the complete joint goal.
+    int previous_primitive = -1;
+    int next_primitive = -1;
+    int connection_heading = 0;
+    int terminal_agent = -1;
+
+    bool operator==(const KinematicNoGood& other) const noexcept {
+      return previous_primitive == other.previous_primitive &&
+             next_primitive == other.next_primitive &&
+             connection_heading == other.connection_heading &&
+             terminal_agent == other.terminal_agent;
+    }
+  };
+
+  struct KinematicNoGoodHash {
+    std::size_t operator()(const KinematicNoGood& item) const noexcept;
+  };
+
+  struct KinematicValidation {
+    bool feasible = true;
+    std::size_t agent = 0;
+    // Boundary immediately before primitive i failed. A value equal to the
+    // primitive count means that the terminal stop failed.
+    std::size_t primitive_index = 0;
+  };
+
+  struct SearchKey {
+    std::vector<State> configuration;
+    std::vector<PrimitiveId> previous_primitives;
+    std::vector<ScalarInterval> boundary_rates;
+
+    bool operator==(const SearchKey& other) const noexcept {
+      if (configuration != other.configuration ||
+          previous_primitives != other.previous_primitives ||
+          boundary_rates.size() != other.boundary_rates.size()) {
+        return false;
+      }
+      for (std::size_t i = 0; i < boundary_rates.size(); ++i) {
+        if (boundary_rates[i].lower != other.boundary_rates[i].lower ||
+            boundary_rates[i].upper != other.boundary_rates[i].upper) {
+          return false;
+        }
+      }
+      return true;
+    }
+  };
+
+  struct SearchKeyHash {
+    std::size_t operator()(const SearchKey& item) const noexcept;
+  };
+
   // Declared first so construction time also includes PrimitiveTable and CollisionChecker construction.
   std::chrono::steady_clock::time_point construction_start_;
   Problem problem_;
@@ -337,6 +394,13 @@ class Planner {
   CandidateProvider candidates_;
   std::mt19937 random_;
   SearchInstrumentation instrumentation_;
+  std::unordered_set<KinematicNoGood, KinematicNoGoodHash>
+      kinematic_no_goods_;
+  bool kinematic_restart_requested_ = false;
+  bool kinematic_restart_blocked_ = false;
+  std::uint64_t kinematic_validation_calls_ = 0;
+  std::uint64_t kinematic_validation_failures_ = 0;
+  std::uint64_t kinematic_search_restarts_ = 0;
 
   double primitive_collision_precompute_ms_ = 0.0;
   double static_precompute_ms_ = 0.0;
@@ -362,14 +426,14 @@ class Planner {
       const SearchAttempt& attempt,
       double weight,
       Deadline& deadline,
-      Solution& solution) const;
+      Solution& solution);
 
   void publish_solution_from_node(
       const std::vector<SearchNode>& nodes,
       int goal_index,
       double weight,
       Deadline& deadline,
-      Solution& solution) const;
+      Solution& solution);
 
   [[nodiscard]] std::vector<int> priority_order(
       const std::vector<State>& configuration) const;
@@ -385,10 +449,47 @@ class Planner {
 
   [[nodiscard]] std::optional<JointMove> next_joint_move(
       const std::vector<State>& configuration,
+      const std::vector<PrimitiveId>& previous_primitives,
+      const std::vector<ScalarInterval>& boundary_rates,
       const std::vector<int>& order,
       PIBT& pibt,
       Deadline& deadline,
       JointMoveGeneratorState& generator);
+
+  [[nodiscard]] bool violates_kinematic_no_good(
+      const std::vector<State>& configuration,
+      const std::vector<PrimitiveId>& previous_primitives,
+      const std::vector<PrimitiveId>& selected,
+      const std::vector<State>& next) const;
+
+  [[nodiscard]] bool propagate_joint_boundary_rates(
+      const std::vector<State>& configuration,
+      const std::vector<PrimitiveId>& previous_primitives,
+      const std::vector<ScalarInterval>& current_boundary_rates,
+      const std::vector<PrimitiveId>& selected,
+      const std::vector<State>& next,
+      std::vector<ScalarInterval>& next_boundary_rates) const;
+
+  [[nodiscard]] ScalarInterval propagate_primitive_rates(
+      const Primitive& primitive,
+      const ScalarInterval& incoming) const;
+
+  [[nodiscard]] ScalarInterval local_candidate_end_rates(
+      const State& connection_state,
+      int previous_primitive,
+      PrimitiveId candidate) const;
+
+  [[nodiscard]] KinematicValidation validate_kinematics(
+      const SearchAttempt& attempt) const;
+
+  bool add_kinematic_no_good(
+      const SearchAttempt& attempt,
+      const KinematicValidation& failure);
+
+  [[nodiscard]] SearchKey make_search_key(
+      const std::vector<State>& configuration,
+      const std::vector<PrimitiveId>& previous_primitives,
+      const std::vector<ScalarInterval>& boundary_rates) const;
 
   [[nodiscard]] bool generator_has_more(
       const JointMoveGeneratorState& generator) const;

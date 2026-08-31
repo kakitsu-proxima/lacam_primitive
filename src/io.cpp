@@ -89,37 +89,135 @@ int exact_delta_cells(
 State read_metric_state(
     const Node& node,
     const std::string& name,
-    const GridSpec& grid) {
+    const Problem& problem) {
   const auto values = read_double_sequence(node, 3, name);
   const double rounded_heading = std::round(values[2]);
   if (std::abs(values[2] - rounded_heading) > 1e-8) {
     throw std::runtime_error(name + " heading must be an integer bin");
   }
-  return State{
-      exact_cell_value(values[0], grid.origin_x, grid.cell_size, name + " x"),
-      exact_cell_value(values[1], grid.origin_y, grid.cell_size, name + " y"),
-      positive_mod(
-          static_cast<int>(std::llround(rounded_heading)),
-          grid.heading_bins)};
+  const int heading = positive_mod(
+      static_cast<int>(std::llround(rounded_heading)),
+      problem.grid.heading_bins);
+  const double raw_x = problem.grid.cell_x(values[0]) -
+                       problem.heading_anchor_x_cells(heading);
+  const double raw_y = problem.grid.cell_y(values[1]) -
+                       problem.heading_anchor_y_cells(heading);
+  const State nearest{
+      static_cast<int>(std::llround(raw_x)),
+      static_cast<int>(std::llround(raw_y)),
+      heading};
+  const double dx_m = problem.world_x(nearest) - values[0];
+  const double dy_m = problem.world_y(nearest) - values[1];
+  const double snap_distance_m = std::hypot(dx_m, dy_m);
+  const double floating_point_slack = 1e-8 * problem.grid.cell_size;
+  if (snap_distance_m >
+      problem.grid.pose_snap_tolerance_m + floating_point_slack) {
+    std::ostringstream message;
+    message << std::setprecision(12) << name << " requested centre pose ["
+            << values[0] << ", " << values[1] << ", " << heading
+            << "] is not on the planning pose lattice. The nearest "
+               "representable centre is ["
+            << problem.world_x(nearest) << ", " << problem.world_y(nearest)
+            << ", " << heading << "] (distance " << snap_distance_m
+            << " m), exceeding grid.pose_snap_tolerance_m="
+            << problem.grid.pose_snap_tolerance_m
+            << " m. Increase that explicit metric tolerance, use a finer "
+               "planning cell_size, or specify start_ref/goal_ref on "
+               "grid.pose_reference.";
+    throw std::runtime_error(message.str());
+  }
+  return nearest;
+}
+
+State read_reference_state(
+    const Node& node,
+    const std::string& name,
+    const Problem& problem) {
+  if (!problem.grid.has_pose_reference) {
+    throw std::runtime_error(
+        name + " requires grid.pose_reference");
+  }
+  const auto values = read_int_sequence(node, 3, name);
+  const double heading_in_planning_bins =
+      static_cast<double>(values[2]) *
+      static_cast<double>(problem.grid.heading_bins) /
+      static_cast<double>(problem.grid.pose_reference_heading_bins);
+  const double rounded_heading = std::round(heading_in_planning_bins);
+  if (std::abs(heading_in_planning_bins - rounded_heading) > 1e-8) {
+    std::ostringstream message;
+    message << name << " heading bin " << values[2] << " on the "
+            << problem.grid.pose_reference_heading_bins
+            << "-bin reference lattice is not representable with grid.heading_bins="
+            << problem.grid.heading_bins;
+    throw std::runtime_error(message.str());
+  }
+  const int heading = positive_mod(
+      static_cast<int>(std::llround(rounded_heading)),
+      problem.grid.heading_bins);
+
+  // Reuse the metric projection path. The synthetic node is deliberately not
+  // constructed here because yaml::Node has no public builder API.
+  const double world_x = problem.grid.pose_reference_origin_x +
+                         static_cast<double>(values[0]) *
+                             problem.grid.pose_reference_cell_size;
+  const double world_y = problem.grid.pose_reference_origin_y +
+                         static_cast<double>(values[1]) *
+                             problem.grid.pose_reference_cell_size;
+  const double raw_x = problem.grid.cell_x(world_x) -
+                       problem.heading_anchor_x_cells(heading);
+  const double raw_y = problem.grid.cell_y(world_y) -
+                       problem.heading_anchor_y_cells(heading);
+  const State nearest{static_cast<int>(std::llround(raw_x)),
+                      static_cast<int>(std::llround(raw_y)), heading};
+  const double snap_distance_m = std::hypot(
+      problem.world_x(nearest) - world_x,
+      problem.world_y(nearest) - world_y);
+  const double floating_point_slack = 1e-8 * problem.grid.cell_size;
+  if (snap_distance_m >
+      problem.grid.pose_snap_tolerance_m + floating_point_slack) {
+    std::ostringstream message;
+    message << std::setprecision(12) << name << " reference pose ["
+            << values[0] << ", " << values[1] << ", " << values[2]
+            << "] denotes metric centre [" << world_x << ", " << world_y
+            << "] but its nearest planning-lattice centre is ["
+            << problem.world_x(nearest) << ", " << problem.world_y(nearest)
+            << "] (distance " << snap_distance_m
+            << " m), exceeding grid.pose_snap_tolerance_m="
+            << problem.grid.pose_snap_tolerance_m << " m.";
+    throw std::runtime_error(message.str());
+  }
+  return nearest;
 }
 
 State read_agent_state(
     const Node& item,
     const std::string& cell_key,
     const std::string& metric_key,
+    const std::string& reference_key,
     const std::string& name,
-    const GridSpec& grid) {
+    const Problem& problem) {
   const bool has_cells = item.contains(cell_key);
   const bool has_metric = item.contains(metric_key);
-  if (has_cells == has_metric) {
+  const bool has_reference = item.contains(reference_key);
+  const int specified = static_cast<int>(has_cells) +
+                        static_cast<int>(has_metric) +
+                        static_cast<int>(has_reference);
+  if (specified != 1) {
     throw std::runtime_error(
-        name + " must specify exactly one of " + cell_key + " or " +
-        metric_key);
+        name + " must specify exactly one of " + cell_key + ", " +
+        metric_key + ", or " + reference_key);
   }
-  return has_metric
-             ? read_metric_state(item.at(metric_key), name + "." + metric_key, grid)
-             : read_state(
-                   item.at(cell_key), name + "." + cell_key, grid.heading_bins);
+  if (has_metric) {
+    return read_metric_state(
+        item.at(metric_key), name + "." + metric_key, problem);
+  }
+  if (has_reference) {
+    return read_reference_state(
+        item.at(reference_key), name + "." + reference_key, problem);
+  }
+  return read_state(
+      item.at(cell_key), name + "." + cell_key,
+      problem.grid.heading_bins);
 }
 
 void validate_problem(const Problem& problem) {
@@ -133,6 +231,15 @@ void validate_problem(const Problem& problem) {
     throw std::runtime_error(
         "grid dimensions and heading_bins must be positive");
   }
+  if (problem.grid.pose_snap_tolerance_m < 0.0) {
+    throw std::runtime_error("grid.pose_snap_tolerance_m must be non-negative");
+  }
+  if (problem.grid.has_pose_reference &&
+      (problem.grid.pose_reference_cell_size <= 0.0 ||
+       problem.grid.pose_reference_heading_bins <= 0)) {
+    throw std::runtime_error(
+        "grid.pose_reference cell_size and heading_bins must be positive");
+  }
   if (problem.grid.has_metric_bounds &&
       (problem.grid.max_x_m <= problem.grid.min_x_m ||
        problem.grid.max_y_m <= problem.grid.min_y_m)) {
@@ -142,6 +249,12 @@ void validate_problem(const Problem& problem) {
       problem.robot.width <= 0.0 ||
       problem.robot.max_linear_velocity <= 0.0 ||
       problem.robot.max_angular_velocity <= 0.0 ||
+      std::isnan(problem.robot.max_linear_acceleration) ||
+      problem.robot.max_linear_acceleration <= 0.0 ||
+      std::isnan(problem.robot.max_angular_acceleration) ||
+      problem.robot.max_angular_acceleration <= 0.0 ||
+      std::isnan(problem.robot.max_body_point_acceleration) ||
+      problem.robot.max_body_point_acceleration <= 0.0 ||
       problem.robot.collision_padding < 0.0) {
     throw std::runtime_error("robot dimensions/limits are invalid");
   }
@@ -166,6 +279,12 @@ void validate_problem(const Problem& problem) {
       problem.search.initial_candidate_width == 0) {
     throw std::runtime_error(
         "search branching and candidate widths must be positive");
+  }
+  if (problem.primitive_config.use_pivot_anchor_lattice &&
+      (problem.primitive_config.rotation_pivot_offsets_cells.size() != 1 ||
+       problem.primitive_config.rotation_pivot_offsets_cells.front() == 0)) {
+    throw std::runtime_error(
+        "pivot anchor lattice requires exactly one non-zero pivot offset");
   }
   for (std::size_t i = 0; i < problem.agents.size(); ++i) {
     for (const auto& item : std::vector<std::pair<std::string, State>>{
@@ -201,6 +320,27 @@ Problem load_problem(const std::string& path) {
     const auto values = read_double_sequence(*origin, 2, "grid.origin");
     problem.grid.origin_x = values[0];
     problem.grid.origin_y = values[1];
+  }
+  problem.grid.pose_reference_origin_x = problem.grid.origin_x;
+  problem.grid.pose_reference_origin_y = problem.grid.origin_y;
+  if (const Node* value = optional_child(grid, "pose_snap_tolerance_m")) {
+    problem.grid.pose_snap_tolerance_m = value->as_double();
+  }
+  if (const Node* reference = optional_child(grid, "pose_reference")) {
+    if (!reference->is_map()) {
+      throw std::runtime_error("grid.pose_reference must be a map");
+    }
+    problem.grid.has_pose_reference = true;
+    problem.grid.pose_reference_cell_size =
+        reference->at("cell_size").as_double();
+    problem.grid.pose_reference_heading_bins =
+        reference->at("heading_bins").as_int();
+    if (const Node* origin = optional_child(*reference, "origin")) {
+      const auto values =
+          read_double_sequence(*origin, 2, "grid.pose_reference.origin");
+      problem.grid.pose_reference_origin_x = values[0];
+      problem.grid.pose_reference_origin_y = values[1];
+    }
   }
   if (const Node* bounds = optional_child(grid, "bounds_m")) {
     const auto values = read_double_sequence(*bounds, 4, "grid.bounds_m");
@@ -260,6 +400,15 @@ Problem load_problem(const std::string& path) {
   if (const Node* padding = optional_child(robot, "collision_padding")) {
     problem.robot.collision_padding = padding->as_double();
   }
+  if (const Node* value = optional_child(robot, "max_linear_acceleration")) {
+    problem.robot.max_linear_acceleration = value->as_double();
+  }
+  if (const Node* value = optional_child(robot, "max_angular_acceleration")) {
+    problem.robot.max_angular_acceleration = value->as_double();
+  }
+  if (const Node* value = optional_child(robot, "max_body_point_acceleration")) {
+    problem.robot.max_body_point_acceleration = value->as_double();
+  }
 
   const Node& primitives = root.at("primitives");
   const bool has_translation_cells = primitives.contains("translation_cells");
@@ -285,8 +434,32 @@ Problem load_problem(const std::string& path) {
                   "primitives.translation_distances_m[]")
             : translations.at(i).as_int());
   }
-  problem.primitive_config.rotation_bins =
-      primitives.at("rotation_bins").as_int();
+  const Node& rotation_bins = primitives.at("rotation_bins");
+  problem.primitive_config.rotation_bin_counts.clear();
+  if (rotation_bins.is_sequence()) {
+    if (rotation_bins.size() == 0) {
+      throw std::runtime_error("primitives.rotation_bins must not be empty");
+    }
+    for (std::size_t i = 0; i < rotation_bins.size(); ++i) {
+      problem.primitive_config.rotation_bin_counts.push_back(
+          rotation_bins.at(i).as_int());
+    }
+  } else {
+    problem.primitive_config.rotation_bin_counts.push_back(
+        rotation_bins.as_int());
+  }
+  if (const Node* value = optional_child(
+          primitives, "use_multiple_rotation_amounts")) {
+    problem.primitive_config.use_multiple_rotation_amounts = value->as_bool();
+  }
+  if (const Node* value = optional_child(
+          primitives, "use_acceleration_constraints")) {
+    problem.primitive_config.use_acceleration_constraints = value->as_bool();
+  }
+  if (const Node* value = optional_child(
+          primitives, "use_pivot_anchor_lattice")) {
+    problem.primitive_config.use_pivot_anchor_lattice = value->as_bool();
+  }
 
   const bool has_pivot_cells = primitives.contains("rotation_pivot_offsets_cells");
   const bool has_pivot_m = primitives.contains("rotation_pivot_offsets_m");
@@ -315,6 +488,16 @@ Problem load_problem(const std::string& path) {
                     problem.grid.cell_size,
                     "primitives.rotation_pivot_offsets_m[]")
               : pivot->at(i).as_int());
+    }
+  }
+
+  if (problem.primitive_config.use_pivot_anchor_lattice) {
+    const auto& offsets =
+        problem.primitive_config.rotation_pivot_offsets_cells;
+    if (offsets.size() != 1 || offsets.front() == 0) {
+      throw std::runtime_error(
+          "use_pivot_anchor_lattice requires exactly one non-zero "
+          "rotation pivot offset");
     }
   }
 
@@ -445,9 +628,9 @@ Problem load_problem(const std::string& path) {
     const Node& item = agents.at(i);
     problem.agents.push_back(Agent{
         read_agent_state(
-            item, "start", "start_m", "agents[]", problem.grid),
+            item, "start", "start_m", "start_ref", "agents[]", problem),
         read_agent_state(
-            item, "goal", "goal_m", "agents[]", problem.grid)});
+            item, "goal", "goal_m", "goal_ref", "agents[]", problem)});
   }
 
   validate_problem(problem);
@@ -480,8 +663,8 @@ void write_solution(
           }
           stream << indent << "    states_m:\n";
           for (const State& state : plans[agent].states) {
-            stream << indent << "      - [" << problem.grid.world_x(state.x)
-                   << ", " << problem.grid.world_y(state.y) << ", "
+            stream << indent << "      - [" << problem.world_x(state)
+                   << ", " << problem.world_y(state) << ", "
                    << state.heading << "]\n";
           }
           stream << indent << "    primitive_ids: [";
@@ -551,6 +734,17 @@ void write_solution(
   stream << "  per_primitive_intervals_enabled: "
          << (solution.stats.per_primitive_intervals_enabled ? "true" : "false")
          << '\n';
+  stream << "  multiple_rotation_amounts_enabled: "
+         << (solution.stats.multiple_rotation_amounts_enabled ? "true" : "false")
+         << '\n';
+  stream << "  acceleration_constraints_enabled: "
+         << (solution.stats.acceleration_constraints_enabled ? "true" : "false")
+         << '\n';
+  stream << "  pivot_anchor_lattice_enabled: "
+         << (solution.stats.pivot_anchor_lattice_enabled ? "true" : "false")
+         << '\n';
+  stream << "  active_rotation_amount_count: "
+         << solution.stats.active_rotation_amount_count << '\n';
   stream << "  collision_mode: " << solution.stats.collision_mode << '\n';
   stream << "  max_boundary_travel_per_interval_m: "
          << solution.stats.max_boundary_travel_per_interval_m << '\n';
@@ -608,6 +802,14 @@ void write_solution(
   stream << "  interval_aabb_rejects: "
          << solution.stats.interval_aabb_rejects << '\n';
   stream << "  polygon_sat_tests: " << solution.stats.polygon_sat_tests << '\n';
+  stream << "  kinematic_validation_calls: "
+         << solution.stats.kinematic_validation_calls << '\n';
+  stream << "  kinematic_validation_failures: "
+         << solution.stats.kinematic_validation_failures << '\n';
+  stream << "  kinematic_search_restarts: "
+         << solution.stats.kinematic_search_restarts << '\n';
+  stream << "  kinematic_no_good_count: "
+         << solution.stats.kinematic_no_good_count << '\n';
 
   stream << "grid:\n";
   stream << "  cell_size: " << problem.grid.cell_size << '\n';
@@ -615,6 +817,17 @@ void write_solution(
          << problem.grid.origin_y << "]\n";
   stream << "  heading_bins: " << problem.grid.heading_bins << '\n';
   stream << "  macro_dt: " << problem.grid.macro_dt << '\n';
+  stream << "  pose_snap_tolerance_m: "
+         << problem.grid.pose_snap_tolerance_m << '\n';
+  if (problem.grid.has_pose_reference) {
+    stream << "  pose_reference:\n";
+    stream << "    cell_size: "
+           << problem.grid.pose_reference_cell_size << '\n';
+    stream << "    origin: [" << problem.grid.pose_reference_origin_x << ", "
+           << problem.grid.pose_reference_origin_y << "]\n";
+    stream << "    heading_bins: "
+           << problem.grid.pose_reference_heading_bins << '\n';
+  }
   if (problem.grid.has_metric_bounds) {
     stream << "  bounds_m: [" << problem.grid.min_x_m << ", "
            << problem.grid.min_y_m << ", " << problem.grid.max_x_m << ", "

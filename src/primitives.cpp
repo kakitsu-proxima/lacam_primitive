@@ -115,27 +115,37 @@ void PrimitiveTable::generate_primitives() {
         std::max(max_position_delta_cells_, distance);
   }
 
-  const int rotation_bins =
-      problem_.primitive_config.rotation_bins;
-
-  if (rotation_bins <= 0) {
-    throw std::invalid_argument(
-        "rotation_bins must be positive");
+  std::set<int> configured_rotation_bin_counts;
+  for (int rotation_bins :
+       problem_.primitive_config.rotation_bin_counts) {
+    if (rotation_bins <= 0 || rotation_bins >= grid.heading_bins) {
+      throw std::invalid_argument(
+          "rotation_bins entries must be positive and smaller than "
+          "grid.heading_bins");
+    }
+    configured_rotation_bin_counts.insert(rotation_bins);
+  }
+  if (configured_rotation_bin_counts.empty()) {
+    throw std::invalid_argument("rotation_bins must not be empty");
   }
 
-  const double angular_velocity =
-      static_cast<double>(rotation_bins) *
-      grid.heading_step() /
-      grid.macro_dt;
-
-  if (angular_velocity >
-      robot.max_angular_velocity + 1e-9) {
-    throw std::invalid_argument(
-        "rotation primitive exceeds max_angular_velocity");
+  std::set<int> rotation_bin_counts = configured_rotation_bin_counts;
+  if (!problem_.primitive_config.use_multiple_rotation_amounts) {
+    rotation_bin_counts = {*configured_rotation_bin_counts.begin()};
   }
+  active_rotation_amount_count_ = rotation_bin_counts.size();
 
-  // Currently, the agent can rotate in one rotation_bin in the single macro_dt.
-  max_rotation_bins_ = rotation_bins;
+  for (int rotation_bins : rotation_bin_counts) {
+    const double angular_velocity =
+        static_cast<double>(rotation_bins) * grid.heading_step() /
+        grid.macro_dt;
+    if (angular_velocity > robot.max_angular_velocity + 1e-9) {
+      throw std::invalid_argument(
+          "rotation primitive of " + std::to_string(rotation_bins) +
+          " bins exceeds max_angular_velocity at the configured macro_dt");
+    }
+    max_rotation_bins_ = std::max(max_rotation_bins_, rotation_bins);
+  }
 
   std::set<int> pivot_offsets(
       problem_.primitive_config
@@ -146,22 +156,29 @@ void PrimitiveTable::generate_primitives() {
   if (pivot_offsets.empty()) {
     pivot_offsets.insert(0);
   }
+  if (problem_.primitive_config.use_pivot_anchor_lattice &&
+      (pivot_offsets.size() != 1 || *pivot_offsets.begin() == 0)) {
+    throw std::invalid_argument(
+        "pivot anchor lattice requires exactly one non-zero pivot offset");
+  }
 
-  // The center of the rectangle travels around the selected pivot.
-  // Check its tangential velocity as a conservative interpretation of max_linear_velocity.
+  // The center of the rectangle travels around the selected pivot. Check each
+  // requested angular displacement because they all share the same macro_dt.
   for (int offset : pivot_offsets) {
     if (offset != 0) has_off_center_pivots_ = true;
-    const double center_linear_velocity =
-        std::abs(static_cast<double>(offset)) *
-        grid.cell_size *
-        angular_velocity;
-
-    if (center_linear_velocity >
-        robot.max_linear_velocity + 1e-9) {
-      throw std::invalid_argument(
-          "pivot rotation with offset " +
-          std::to_string(offset) +
-          " cells exceeds max_linear_velocity");
+    for (int rotation_bins : rotation_bin_counts) {
+      const double angular_velocity =
+          static_cast<double>(rotation_bins) *
+          grid.heading_step() / grid.macro_dt;
+      const double center_linear_velocity =
+          std::abs(static_cast<double>(offset)) *
+          grid.cell_size * angular_velocity;
+      if (center_linear_velocity > robot.max_linear_velocity + 1e-9) {
+        throw std::invalid_argument(
+            "pivot rotation with offset " + std::to_string(offset) +
+            " cells and " + std::to_string(rotation_bins) +
+            " rotation bins exceeds max_linear_velocity");
+      }
     }
   }
 
@@ -182,15 +199,98 @@ void PrimitiveTable::generate_primitives() {
             static_cast<PrimitiveId>(
                 primitives_.size());
 
-        primitives_.push_back(
-            Primitive{
-                id,
-                std::move(name),
-                dx,
-                dy,
-                dh,
-                pivot_rotation,
-                pivot_offset_cells});
+        Primitive primitive;
+        primitive.id = id;
+        primitive.name = std::move(name);
+        primitive.dx = dx;
+        primitive.dy = dy;
+        primitive.d_heading = dh;
+        primitive.pivot_rotation = pivot_rotation;
+        primitive.pivot_offset_cells = pivot_offset_cells;
+
+        if (dh != 0) {
+          primitive.progress_coordinate = ProgressCoordinate::kRotationRadians;
+          primitive.progress_envelope = constant_acceleration_envelope(
+              std::abs(static_cast<double>(dh) * grid.heading_step()),
+              grid.macro_dt,
+              robot.max_angular_velocity,
+              problem_.primitive_config.use_acceleration_constraints
+                  ? robot.max_angular_acceleration
+                  : std::numeric_limits<double>::infinity());
+          primitive.kinematic_max_rate = robot.max_angular_velocity;
+          primitive.kinematic_max_acceleration =
+              problem_.primitive_config.use_acceleration_constraints
+                  ? robot.max_angular_acceleration
+                  : std::numeric_limits<double>::infinity();
+          if (problem_.primitive_config.use_acceleration_constraints &&
+              std::isfinite(robot.max_body_point_acceleration)) {
+            const double pivot_offset_m =
+                static_cast<double>(pivot_offset_cells) * grid.cell_size;
+            const double half_length = 0.5 * robot.length;
+            const double half_width = 0.5 * robot.width;
+            double maximum_radius = 0.0;
+            for (double x : {-half_length, half_length}) {
+              for (double y : {-half_width, half_width}) {
+                maximum_radius = std::max(
+                    maximum_radius,
+                    std::hypot(x - pivot_offset_m, y));
+              }
+            }
+            if (maximum_radius > 0.0) {
+              const double component_limit =
+                  robot.max_body_point_acceleration / std::sqrt(2.0);
+              primitive.kinematic_max_acceleration = std::min(
+                  primitive.kinematic_max_acceleration,
+                  component_limit / maximum_radius);
+              primitive.kinematic_max_rate = std::min(
+                  primitive.kinematic_max_rate,
+                  std::sqrt(component_limit / maximum_radius));
+            }
+          }
+        } else if (dx != 0 || dy != 0) {
+          primitive.progress_coordinate = ProgressCoordinate::kTranslationMetres;
+          primitive.progress_envelope = constant_acceleration_envelope(
+              std::hypot(static_cast<double>(dx), static_cast<double>(dy)) *
+              grid.cell_size,
+              grid.macro_dt,
+              robot.max_linear_velocity,
+              problem_.primitive_config.use_acceleration_constraints
+                  ? std::min(
+                        robot.max_linear_acceleration,
+                        robot.max_body_point_acceleration)
+                  : std::numeric_limits<double>::infinity());
+          primitive.kinematic_max_rate = robot.max_linear_velocity;
+          primitive.kinematic_max_acceleration =
+              problem_.primitive_config.use_acceleration_constraints
+                  ? std::min(
+                        robot.max_linear_acceleration,
+                        robot.max_body_point_acceleration)
+                  : std::numeric_limits<double>::infinity();
+        } else {
+          // A geometric wait cannot carry non-zero velocity without leaving
+          // and returning to the waypoint, so its only valid boundary rate is
+          // exactly zero.
+          primitive.progress_coordinate = ProgressCoordinate::kStationary;
+          primitive.progress_envelope.displacement = 0.0;
+          primitive.progress_envelope.duration = grid.macro_dt;
+          primitive.progress_envelope.start_velocity = ScalarInterval{0.0, 0.0};
+          primitive.progress_envelope.end_velocity = ScalarInterval{0.0, 0.0};
+          primitive.kinematic_max_rate = 0.0;
+          primitive.kinematic_max_acceleration =
+              std::numeric_limits<double>::infinity();
+        }
+        if (problem_.primitive_config.use_acceleration_constraints &&
+            primitive.progress_coordinate != ProgressCoordinate::kStationary) {
+          primitive.kinematically_feasible =
+              !propagate_cubic_boundary_rates(
+                   primitive.progress_envelope.displacement,
+                   primitive.progress_envelope.duration,
+                   primitive.kinematic_max_rate,
+                   primitive.kinematic_max_acceleration,
+                   ScalarInterval{0.0, primitive.kinematic_max_rate})
+                   .empty();
+        }
+        primitives_.push_back(std::move(primitive));
 
         return id;
       };
@@ -244,25 +344,30 @@ void PrimitiveTable::generate_primitives() {
         0);
   }
 
-  for (int pivot_offset : pivot_offsets) {
-    const std::string suffix =
-        pivot_suffix(pivot_offset);
+  const bool multiple_rotation_amounts = rotation_bin_counts.size() > 1;
+  for (int rotation_bins : rotation_bin_counts) {
+    for (int pivot_offset : pivot_offsets) {
+      std::string suffix = pivot_suffix(pivot_offset);
+      if (multiple_rotation_amounts) {
+        suffix = std::to_string(rotation_bins) + "_" + suffix;
+      }
 
-    add(
-        "rotate_ccw_" + suffix,
-        0,
-        0,
-        rotation_bins,
-        true,
-        pivot_offset);
+      add(
+          "rotate_ccw_" + suffix,
+          0,
+          0,
+          rotation_bins,
+          true,
+          pivot_offset);
 
-    add(
-        "rotate_cw_" + suffix,
-        0,
-        0,
-        -rotation_bins,
-        true,
-        pivot_offset);
+      add(
+          "rotate_cw_" + suffix,
+          0,
+          0,
+          -rotation_bins,
+          true,
+          pivot_offset);
+    }
   }
 }
 
@@ -403,9 +508,12 @@ void PrimitiveTable::build_variants() {
             pivot_offset *
                 std::sin(end_yaw);
 
-        // State only supports integer grid coordinates.
-        if (!nearly_integer(final_center_x) ||
-            !nearly_integer(final_center_y)) {
+        // The legacy lattice requires the physical center delta itself to be
+        // integral. The pivot-anchor lattice removes its heading-dependent
+        // fractional part below before checking the integer state delta.
+        if (!problem_.primitive_config.use_pivot_anchor_lattice &&
+            (!nearly_integer(final_center_x) ||
+             !nearly_integer(final_center_y))) {
           throw std::invalid_argument(
               "pivot rotation produces a non-integer "
               "grid endpoint. Use a finer cell_size or "
@@ -413,15 +521,59 @@ void PrimitiveTable::build_variants() {
         }
       }
 
+      double lattice_delta_x = final_center_x;
+      double lattice_delta_y = final_center_y;
+      if (problem_.primitive_config.use_pivot_anchor_lattice) {
+        const int end_heading = positive_mod(
+            heading + primitive.d_heading, grid.heading_bins);
+        lattice_delta_x -=
+            problem_.heading_anchor_x_cells(end_heading) -
+            problem_.heading_anchor_x_cells(heading);
+        lattice_delta_y -=
+            problem_.heading_anchor_y_cells(end_heading) -
+            problem_.heading_anchor_y_cells(heading);
+      }
+      if (!nearly_integer(lattice_delta_x) ||
+          !nearly_integer(lattice_delta_y)) {
+        throw std::invalid_argument(
+            "primitive endpoint is not representable on the selected "
+            "heading-dependent position lattice");
+      }
+
       variant.delta =
           State{
               static_cast<int>(
                   std::llround(
-                      final_center_x)),
+                      lattice_delta_x)),
               static_cast<int>(
                   std::llround(
-                      final_center_y)),
+                      lattice_delta_y)),
               primitive.d_heading};
+
+      if (primitive.pivot_rotation) {
+        const double direction = primitive.d_heading > 0 ? 1.0 : -1.0;
+        const double pivot_offset_m =
+            static_cast<double>(primitive.pivot_offset_cells) * grid.cell_size;
+        const double end_yaw = start_yaw + yaw_delta;
+        variant.start_twist_per_progress_rate = Twist2D{
+            direction * pivot_offset_m * std::sin(start_yaw),
+            -direction * pivot_offset_m * std::cos(start_yaw),
+            direction};
+        variant.end_twist_per_progress_rate = Twist2D{
+            direction * pivot_offset_m * std::sin(end_yaw),
+            -direction * pivot_offset_m * std::cos(end_yaw),
+            direction};
+      } else if (primitive.dx != 0 || primitive.dy != 0) {
+        const double distance = std::hypot(
+            static_cast<double>(primitive.dx),
+            static_cast<double>(primitive.dy));
+        const Twist2D direction{
+            static_cast<double>(primitive.dx) / distance,
+            static_cast<double>(primitive.dy) / distance,
+            0.0};
+        variant.start_twist_per_progress_rate = direction;
+        variant.end_twist_per_progress_rate = direction;
+      }
 
       if (primitive.d_heading != 0 &&
           (variant.delta.x != 0 ||

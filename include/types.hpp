@@ -82,6 +82,21 @@ struct GridSpec {
   int heading_bins = 4;
   double macro_dt = 0.2;
 
+  // Optional human-facing scenario lattice. Agent poses expressed with
+  // start_ref/goal_ref are converted to metric poses on this lattice first,
+  // so changing the planning cell_size or heading_bins does not redefine the
+  // scenario.
+  bool has_pose_reference = false;
+  double pose_reference_cell_size = 0.1;
+  double pose_reference_origin_x = 0.0;
+  double pose_reference_origin_y = 0.0;
+  int pose_reference_heading_bins = 4;
+
+  // Maximum metric displacement allowed when a requested centre pose must be
+  // projected onto the heading-dependent planning lattice. Zero retains the
+  // historical exact-only behaviour.
+  double pose_snap_tolerance_m = 0.0;
+
   // Physical workspace boundary. When omitted by legacy inputs, collision
   // checking falls back to the historical outer half-cell boundary.
   bool has_metric_bounds = false;
@@ -137,6 +152,16 @@ struct RobotSpec {
   double max_linear_velocity = 1.0;
   double max_angular_velocity = 8.0;
   double collision_padding = 0.0;
+
+  // Optional dynamic limits. Infinity preserves the historical
+  // velocity-only behaviour. These are metric/physical quantities and do not
+  // change when grid.cell_size changes.
+  double max_linear_acceleration =
+      std::numeric_limits<double>::infinity();       // m/s^2
+  double max_angular_acceleration =
+      std::numeric_limits<double>::infinity();       // rad/s^2
+  double max_body_point_acceleration =
+      std::numeric_limits<double>::infinity();       // m/s^2
 };
 
 struct SearchOptions {
@@ -176,7 +201,24 @@ struct SearchOptions {
 
 struct PrimitiveConfig {
   std::vector<int> translation_cells{1};
-  int rotation_bins = 1;
+
+  // Positive heading-bin counts. With heading_bins=8, {1,2,3} creates
+  // +/-45, +/-90 and +/-135 degree rotations. A scalar `rotation_bins` in a
+  // legacy YAML file is read as a one-element vector.
+  std::vector<int> rotation_bin_counts{1};
+
+  // Feature toggles used for controlled comparisons. When multiple rotation
+  // amounts are disabled, only the smallest configured rotation is active.
+  // When acceleration constraints are disabled, velocity envelopes ignore
+  // acceleration bounds while retaining velocity bounds.
+  bool use_multiple_rotation_amounts = false;
+  bool use_acceleration_constraints = false;
+
+  // Represent the integer state as a heading-dependent lattice anchor tied
+  // to one fixed physical pivot. This permits exact (up to floating-point
+  // evaluation of sin/cos) off-centre 45-degree rotation endpoints without
+  // multiplying the number of x/y states.
+  bool use_pivot_anchor_lattice = false;
 
   // Rotation axis position measured from the rectangle center along the robot's longitudinal (+x body) axis.
   //
@@ -217,6 +259,44 @@ struct Problem {
   std::vector<ObstacleRect> obstacles;
   std::vector<MetricObstacleRect> metric_obstacles;
   std::vector<Agent> agents;
+
+  [[nodiscard]] double heading_anchor_x_cells(int heading) const {
+    if (!primitive_config.use_pivot_anchor_lattice) return 0.0;
+    const double pivot_offset_cells = static_cast<double>(
+        primitive_config.rotation_pivot_offsets_cells.front());
+    const double yaw = static_cast<double>(positive_mod(
+                           heading, grid.heading_bins)) *
+                       grid.heading_step();
+    const double raw = -pivot_offset_cells * std::cos(yaw);
+    return raw - std::floor(raw + 0.5);
+  }
+
+  [[nodiscard]] double heading_anchor_y_cells(int heading) const {
+    if (!primitive_config.use_pivot_anchor_lattice) return 0.0;
+    const double pivot_offset_cells = static_cast<double>(
+        primitive_config.rotation_pivot_offsets_cells.front());
+    const double yaw = static_cast<double>(positive_mod(
+                           heading, grid.heading_bins)) *
+                       grid.heading_step();
+    const double raw = -pivot_offset_cells * std::sin(yaw);
+    return raw - std::floor(raw + 0.5);
+  }
+
+  [[nodiscard]] double center_x_cells(const State& state) const {
+    return static_cast<double>(state.x) + heading_anchor_x_cells(state.heading);
+  }
+
+  [[nodiscard]] double center_y_cells(const State& state) const {
+    return static_cast<double>(state.y) + heading_anchor_y_cells(state.heading);
+  }
+
+  [[nodiscard]] double world_x(const State& state) const {
+    return grid.origin_x + center_x_cells(state) * grid.cell_size;
+  }
+
+  [[nodiscard]] double world_y(const State& state) const {
+    return grid.origin_y + center_y_cells(state) * grid.cell_size;
+  }
 };
 
 using PrimitiveId = std::uint16_t;
@@ -266,6 +346,10 @@ struct RuntimeStats {
   bool progressive_widening_enabled = false;
   std::size_t initial_candidate_width = 1;
   bool per_primitive_intervals_enabled = false;
+  bool multiple_rotation_amounts_enabled = false;
+  bool acceleration_constraints_enabled = false;
+  bool pivot_anchor_lattice_enabled = false;
+  std::size_t active_rotation_amount_count = 1;
   std::string collision_mode = "time_indexed";
   double max_boundary_travel_per_interval_m = 0.005;
   std::size_t collision_interval_count = 0;
@@ -302,6 +386,11 @@ struct RuntimeStats {
   std::uint64_t interval_aabb_tests = 0;
   std::uint64_t interval_aabb_rejects = 0;
   std::uint64_t polygon_sat_tests = 0;
+
+  std::uint64_t kinematic_validation_calls = 0;
+  std::uint64_t kinematic_validation_failures = 0;
+  std::uint64_t kinematic_search_restarts = 0;
+  std::size_t kinematic_no_good_count = 0;
 };
 
 struct Solution {

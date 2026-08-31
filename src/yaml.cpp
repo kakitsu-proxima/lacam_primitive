@@ -288,8 +288,12 @@ bool Node::as_bool() const {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
-  if (value == "true" || value == "yes" || value == "1") return true;
-  if (value == "false" || value == "no" || value == "0") return false;
+  if (value == "true" || value == "yes" || value == "on" || value == "1") {
+    return true;
+  }
+  if (value == "false" || value == "no" || value == "off" || value == "0") {
+    return false;
+  }
   throw std::runtime_error("invalid boolean: " + value);
 }
 

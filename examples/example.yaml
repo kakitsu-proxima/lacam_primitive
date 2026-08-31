@@ -2,21 +2,35 @@ grid:
   cell_size: 0.1 # m 
   origin: [0.0, 0.0]
   bounds_m: [0.0, 0.0, 2.6, 1.0]
-  heading_bins: 4
+  heading_bins: 8
   macro_dt: 0.20
+  # Agent poses below are written on this fixed scenario lattice. Change the
+  # planning cell_size/heading_bins above without rewriting the scenario.
+  pose_reference:
+    cell_size: 0.1
+    origin: [0.0, 0.0]
+    heading_bins: 4
+  pose_snap_tolerance_m: 0.02
 
 robot:
   size: [0.825, 0.275] # [length, width] in m
   max_linear_velocity: 3.0 # m/s
   max_angular_velocity: 8.0 # rad/s
+  max_linear_acceleration: 19.6 # m/s^2
+  max_angular_acceleration: 100.0 # rad/s^2
+  max_body_point_acceleration: 19.6 # m/s^2
   collision_padding: 0.005
 
 primitives:
   translation_distances_m: [0.1, 0.2, 0.3, 0.4, 0.5]
-  rotation_bins: 1
+  rotation_bins: [1, 2]
+  use_multiple_rotation_amounts: false
+  use_acceleration_constraints: false
   # Same physical pivot locations are used at both cell sizes.
   #rotation_pivot_offsets_m: [-0.1, 0.0, 0.1]
-  rotation_pivot_offsets_m: [-0.3, 0.0, 0.3]
+  #rotation_pivot_offsets_m: [-0.3, 0.0, 0.3]
+  rotation_pivot_offsets_m: [-0.3,]
+  use_pivot_anchor_lattice: true
   include_wait: true
 
 search:
@@ -29,9 +43,9 @@ search:
   weight_step: 0.1
   #objective: sum_of_costs
   objective: makespan
-  max_expansions: 20000
-  max_branching: 8
-  alternatives_per_agent: 4
+  max_expansions: 200000
+  max_branching: 16
+  alternatives_per_agent: 8
   random_seed: 7
   use_reverse_bfs_heuristic: true
   diversify_candidates: true
@@ -47,10 +61,9 @@ obstacles: []
 #  - rect_m: [1.0, 0.3, 0.2, 0.4]
 
 agents:
-  # Physical poses are shared verbatim with example_cell_005.yaml.
-  - start_m: [0.5, 0.2, 0]
-    goal_m: [2.3, 0.5, 1]
-  - start_m: [2.3, 0.5, 1]
-    goal_m: [0.5, 0.7, 0]
-  - start_m: [0.5, 0.7, 0]
-    goal_m: [1.7, 0.5, 1]
+  - start_ref: [5, 2, 0]
+    goal_ref: [23, 5, 1]
+  - start_ref: [23, 5, 1]
+    goal_ref: [5, 7, 0]
+  - start_ref: [5, 7, 0]
+    goal_ref: [17, 5, 1]
