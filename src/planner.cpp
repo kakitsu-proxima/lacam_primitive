@@ -94,6 +94,19 @@ ScalarInterval connect_boundary_rates(
       std::min(first, second), std::max(first, second)};
 }
 
+bool boundary_rates_dominate(
+    const std::vector<ScalarInterval>& superset,
+    const std::vector<ScalarInterval>& subset) {
+  if (superset.size() != subset.size()) return false;
+  for (std::size_t i = 0; i < superset.size(); ++i) {
+    if (superset[i].lower > subset[i].lower + kEpsilon ||
+        superset[i].upper + kEpsilon < subset[i].upper) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 std::size_t Planner::KinematicNoGoodHash::operator()(
@@ -120,6 +133,16 @@ std::size_t Planner::SearchKeyHash::operator()(
     seed ^= std::hash<double>{}(interval.lower) + 0x9e3779b97f4a7c15ULL +
             (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<double>{}(interval.upper) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+  }
+  return seed;
+}
+
+std::size_t Planner::BaseSearchKeyHash::operator()(
+    const BaseSearchKey& item) const noexcept {
+  std::size_t seed = JointStateHash{}(item.configuration);
+  for (PrimitiveId primitive : item.previous_primitives) {
+    seed ^= std::hash<PrimitiveId>{}(primitive) + 0x9e3779b97f4a7c15ULL +
             (seed << 6U) + (seed >> 2U);
   }
   return seed;
@@ -723,6 +746,7 @@ bool PIBT::plan(
     const std::vector<State>& current,
     const std::vector<int>& priority_order,
     const std::vector<std::optional<PrimitiveId>>& forced,
+    const std::vector<std::vector<bool>>& dynamically_allowed,
     std::vector<PrimitiveId>& selected,
     std::vector<State>& next) {
   ++instrumentation_.pibt_plan_calls;
@@ -735,7 +759,8 @@ bool PIBT::plan(
   for (int agent : priority_order) {
     if (!assigned[static_cast<std::size_t>(agent)] &&
         !assign_agent(
-            agent, current, forced, selected, next, assigned, visiting)) {
+            agent, current, forced, dynamically_allowed,
+            selected, next, assigned, visiting)) {
       return false;
     }
   }
@@ -746,6 +771,7 @@ bool PIBT::assign_agent(
     int agent,
     const std::vector<State>& current,
     const std::vector<std::optional<PrimitiveId>>& forced,
+    const std::vector<std::vector<bool>>& dynamically_allowed,
     std::vector<PrimitiveId>& selected,
     std::vector<State>& next,
     std::vector<bool>& assigned,
@@ -768,6 +794,11 @@ bool PIBT::assign_agent(
 
   for (PrimitiveId candidate : *candidates) {
     ++instrumentation_.pibt_candidate_attempts;
+    if (!dynamically_allowed.empty() &&
+        !dynamically_allowed.at(id).at(candidate)) {
+      ++instrumentation_.pibt_kinematic_candidate_rejects;
+      continue;
+    }
     const TransitionEntry transition = transitions_.lookup(current[id], candidate);
     if (!transition.valid) continue;
 
@@ -798,6 +829,7 @@ bool PIBT::assign_agent(
       }
       if (!assign_agent(
               static_cast<int>(other), current, forced,
+              dynamically_allowed,
               selected, next, assigned, visiting)) {
         valid = false;
         break;
@@ -979,6 +1011,34 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
         : maximum_width;
     instrumentation_.max_candidate_width = std::max<std::uint64_t>(
         instrumentation_.max_candidate_width, generator.candidate_width);
+
+    if (problem_.primitive_config.use_acceleration_constraints) {
+      generator.dynamically_allowed.assign(
+          configuration.size(),
+          std::vector<bool>(primitives_.primitives().size(), false));
+      for (std::size_t agent = 0; agent < configuration.size(); ++agent) {
+        for (const Primitive& candidate : primitives_.primitives()) {
+          ScalarInterval incoming{0.0, 0.0};
+          if (!previous_primitives.empty()) {
+            const PrimitiveId previous = previous_primitives[agent];
+            const PrimitiveVariant& previous_variant = primitives_.variant(
+                previous,
+                positive_mod(
+                    configuration[agent].heading -
+                        primitives_.primitive(previous).d_heading,
+                    problem_.grid.heading_bins));
+            const PrimitiveVariant& candidate_variant = primitives_.variant(
+                candidate.id, configuration[agent].heading);
+            incoming = connect_boundary_rates(
+                current_boundary_rates[agent],
+                previous_variant.end_twist_per_progress_rate,
+                candidate_variant.start_twist_per_progress_rate);
+          }
+          generator.dynamically_allowed[agent][candidate.id] =
+              !propagate_primitive_rates(candidate, incoming).empty();
+        }
+      }
+    }
     reset_frontier();
   }
 
@@ -1012,7 +1072,9 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
     std::vector<State> next;
     std::vector<ScalarInterval> next_boundary_rates;
     bool unique_result = false;
-    if (pibt.plan(configuration, order, node.forced, selected, next)) {
+    if (pibt.plan(
+            configuration, order, node.forced,
+            generator.dynamically_allowed, selected, next)) {
       const std::string combo = primitive_combo_key(selected);
       if (generator.seen_joint_moves.insert(combo).second) {
         unique_result = !violates_kinematic_no_good(
@@ -1054,30 +1116,11 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
             candidate_scratch);
     std::vector<PrimitiveId> reachable_candidates;
     const std::vector<PrimitiveId>* available_candidates = &candidate_list;
-    if (problem_.primitive_config.use_acceleration_constraints) {
+    if (!generator.dynamically_allowed.empty()) {
       reachable_candidates.reserve(candidate_list.size());
       for (PrimitiveId candidate : candidate_list) {
-        ScalarInterval incoming{0.0, 0.0};
-        if (!previous_primitives.empty()) {
-          const PrimitiveId previous = previous_primitives[
-              static_cast<std::size_t>(agent)];
-          const PrimitiveVariant& previous_variant = primitives_.variant(
-              previous,
-              positive_mod(
-                  configuration[static_cast<std::size_t>(agent)].heading -
-                      primitives_.primitive(previous).d_heading,
-                  problem_.grid.heading_bins));
-          const PrimitiveVariant& candidate_variant = primitives_.variant(
-              candidate,
-              configuration[static_cast<std::size_t>(agent)].heading);
-          incoming = connect_boundary_rates(
-              current_boundary_rates[static_cast<std::size_t>(agent)],
-              previous_variant.end_twist_per_progress_rate,
-              candidate_variant.start_twist_per_progress_rate);
-        }
-        if (!propagate_primitive_rates(
-                 primitives_.primitive(candidate), incoming)
-                 .empty()) {
+        if (generator.dynamically_allowed[
+                static_cast<std::size_t>(agent)][candidate]) {
           reachable_candidates.push_back(candidate);
         }
       }
@@ -1429,6 +1472,9 @@ Planner::SearchAttempt Planner::weighted_search(
 
   std::unordered_map<SearchKey, double, SearchKeyHash> best_g;
   best_g[make_search_key(start, {}, nodes[0].boundary_rates)] = 0.0;
+  std::unordered_map<BaseSearchKey, std::vector<int>, BaseSearchKeyHash>
+      labels_by_base;
+  labels_by_base[BaseSearchKey{start, {}}].push_back(0);
 
   PIBT pibt(
       problem_, primitives_, collision_checker_, transitions_, candidates_, random_,
@@ -1520,6 +1566,30 @@ Planner::SearchAttempt Planner::weighted_search(
       if (found != best_g.end() && found->second <= next_g + kEpsilon) {
         continue;
       }
+
+      const BaseSearchKey base_key{
+          next,
+          problem_.primitive_config.use_acceleration_constraints
+              ? incoming
+              : std::vector<PrimitiveId>{}};
+      bool dominated = false;
+      const auto base_found = labels_by_base.find(base_key);
+      if (base_found != labels_by_base.end()) {
+        for (int label_index : base_found->second) {
+          const SearchNode& label =
+              nodes[static_cast<std::size_t>(label_index)];
+          if (label.g <= next_g + kEpsilon &&
+              boundary_rates_dominate(
+                  label.boundary_rates, move.boundary_rates)) {
+            dominated = true;
+            break;
+          }
+        }
+      }
+      if (dominated) {
+        ++instrumentation_.kinematic_dominance_rejects;
+        continue;
+      }
       best_g[next_key] = next_g;
 
       SearchNode child;
@@ -1533,6 +1603,7 @@ Planner::SearchAttempt Planner::weighted_search(
       nodes.push_back(std::move(child));
 
       const int index = static_cast<int>(nodes.size() - 1);
+      labels_by_base[base_key].push_back(index);
       open.push(QueueEntry{
           next_g + weight * next_h,
           next_h,
@@ -1645,6 +1716,9 @@ void Planner::solve_ara_star(
   std::unordered_map<SearchKey, int, SearchKeyHash> node_index;
   node_index.emplace(
       make_search_key(start, {}, nodes[0].boundary_rates), 0);
+  std::unordered_map<BaseSearchKey, std::vector<int>, BaseSearchKeyHash>
+      labels_by_base;
+  labels_by_base[BaseSearchKey{start, {}}].push_back(0);
 
   std::priority_queue<QueueEntry> open;
   std::uint64_t serial = 0;
@@ -1762,6 +1836,34 @@ void Planner::solve_ara_star(
         const SearchKey next_key = make_search_key(
             next, incoming, move.boundary_rates);
         const auto found = node_index.find(next_key);
+
+        const BaseSearchKey base_key{
+            next,
+            problem_.primitive_config.use_acceleration_constraints
+                ? incoming
+                : std::vector<PrimitiveId>{}};
+        bool dominated = false;
+        const auto base_found = labels_by_base.find(base_key);
+        if (base_found != labels_by_base.end()) {
+          for (int label_index : base_found->second) {
+            if (found != node_index.end() && label_index == found->second) {
+              continue;
+            }
+            const SearchNode& label =
+                nodes[static_cast<std::size_t>(label_index)];
+            if (label.g <= next_g + kEpsilon &&
+                boundary_rates_dominate(
+                    label.boundary_rates, move.boundary_rates)) {
+              dominated = true;
+              break;
+            }
+          }
+        }
+        if (dominated) {
+          ++instrumentation_.kinematic_dominance_rejects;
+          continue;
+        }
+
         if (found == node_index.end()) {
           SearchNode child;
           child.configuration = next;
@@ -1769,6 +1871,7 @@ void Planner::solve_ara_star(
           nodes.push_back(std::move(child));
           next_index = static_cast<int>(nodes.size() - 1);
           node_index.emplace(next_key, next_index);
+          labels_by_base[base_key].push_back(next_index);
         } else {
           next_index = found->second;
         }
@@ -1943,7 +2046,11 @@ Solution Planner::solve() {
   solution.stats.pibt_assign_calls = instrumentation_.pibt_assign_calls;
   solution.stats.pibt_candidate_attempts =
       instrumentation_.pibt_candidate_attempts;
+  solution.stats.pibt_kinematic_candidate_rejects =
+      instrumentation_.pibt_kinematic_candidate_rejects;
   solution.stats.pibt_backtracks = instrumentation_.pibt_backtracks;
+  solution.stats.kinematic_dominance_rejects =
+      instrumentation_.kinematic_dominance_rejects;
   solution.stats.joint_moves_generated =
       instrumentation_.joint_moves_generated;
   solution.stats.joint_move_duplicates =

@@ -772,7 +772,11 @@ void write_solution(
   stream << "  pibt_assign_calls: " << solution.stats.pibt_assign_calls << '\n';
   stream << "  pibt_candidate_attempts: "
          << solution.stats.pibt_candidate_attempts << '\n';
+  stream << "  pibt_kinematic_candidate_rejects: "
+         << solution.stats.pibt_kinematic_candidate_rejects << '\n';
   stream << "  pibt_backtracks: " << solution.stats.pibt_backtracks << '\n';
+  stream << "  kinematic_dominance_rejects: "
+         << solution.stats.kinematic_dominance_rejects << '\n';
   stream << "  joint_moves_generated: "
          << solution.stats.joint_moves_generated << '\n';
   stream << "  joint_move_duplicates: "

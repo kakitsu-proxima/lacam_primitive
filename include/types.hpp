@@ -368,7 +368,9 @@ struct RuntimeStats {
   std::uint64_t pibt_plan_calls = 0;
   std::uint64_t pibt_assign_calls = 0;
   std::uint64_t pibt_candidate_attempts = 0;
+  std::uint64_t pibt_kinematic_candidate_rejects = 0;
   std::uint64_t pibt_backtracks = 0;
+  std::uint64_t kinematic_dominance_rejects = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;

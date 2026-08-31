@@ -98,7 +98,9 @@ struct SearchInstrumentation {
   std::uint64_t pibt_plan_calls = 0;
   std::uint64_t pibt_assign_calls = 0;
   std::uint64_t pibt_candidate_attempts = 0;
+  std::uint64_t pibt_kinematic_candidate_rejects = 0;
   std::uint64_t pibt_backtracks = 0;
+  std::uint64_t kinematic_dominance_rejects = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;
@@ -243,6 +245,7 @@ class PIBT {
       const std::vector<State>& current,
       const std::vector<int>& priority_order,
       const std::vector<std::optional<PrimitiveId>>& forced,
+      const std::vector<std::vector<bool>>& dynamically_allowed,
       std::vector<PrimitiveId>& selected,
       std::vector<State>& next);
 
@@ -259,6 +262,7 @@ class PIBT {
       int agent,
       const std::vector<State>& current,
       const std::vector<std::optional<PrimitiveId>>& forced,
+      const std::vector<std::vector<bool>>& dynamically_allowed,
       std::vector<PrimitiveId>& selected,
       std::vector<State>& next,
       std::vector<bool>& assigned,
@@ -287,6 +291,9 @@ class Planner {
     std::queue<LowLevelConstraintNode> open;
     std::unordered_set<std::string> seen_constraint_nodes;
     std::unordered_set<std::string> seen_joint_moves;
+    // Per-agent primitive feasibility at this search label's incoming
+    // boundary-rate interval. Empty means acceleration constraints are off.
+    std::vector<std::vector<bool>> dynamically_allowed;
     std::size_t candidate_width = 0;
     std::size_t yielded = 0;
     bool initialized = false;
@@ -383,6 +390,20 @@ class Planner {
 
   struct SearchKeyHash {
     std::size_t operator()(const SearchKey& item) const noexcept;
+  };
+
+  struct BaseSearchKey {
+    std::vector<State> configuration;
+    std::vector<PrimitiveId> previous_primitives;
+
+    bool operator==(const BaseSearchKey& other) const noexcept {
+      return configuration == other.configuration &&
+             previous_primitives == other.previous_primitives;
+    }
+  };
+
+  struct BaseSearchKeyHash {
+    std::size_t operator()(const BaseSearchKey& item) const noexcept;
   };
 
   // Declared first so construction time also includes PrimitiveTable and CollisionChecker construction.

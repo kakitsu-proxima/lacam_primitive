@@ -3,7 +3,7 @@ grid:
   origin: [0.0, 0.0]
   bounds_m: [0.0, 0.0, 2.6, 1.0]
   heading_bins: 8
-  macro_dt: 0.20
+  macro_dt: 0.50
   # Agent poses below are written on this fixed scenario lattice. Change the
   # planning cell_size/heading_bins above without rewriting the scenario.
   pose_reference:
@@ -24,8 +24,8 @@ robot:
 primitives:
   translation_distances_m: [0.1, 0.2, 0.3, 0.4, 0.5]
   rotation_bins: [1, 2]
-  use_multiple_rotation_amounts: false
-  use_acceleration_constraints: false
+  use_multiple_rotation_amounts: true
+  use_acceleration_constraints: true
   # Same physical pivot locations are used at both cell sizes.
   #rotation_pivot_offsets_m: [-0.1, 0.0, 0.1]
   #rotation_pivot_offsets_m: [-0.3, 0.0, 0.3]
