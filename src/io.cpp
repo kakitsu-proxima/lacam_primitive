@@ -589,6 +589,14 @@ Problem load_problem(const std::string& path) {
             *search, "use_per_primitive_intervals")) {
       problem.search.use_per_primitive_intervals = value->as_bool();
     }
+    if (const Node* value = optional_child(
+            *search, "use_dynamics_aware_pibt")) {
+      problem.search.use_dynamics_aware_pibt = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "use_interval_dominance")) {
+      problem.search.use_interval_dominance = value->as_bool();
+    }
   }
 
   if (const Node* obstacles = optional_child(root, "obstacles")) {
@@ -692,6 +700,8 @@ void write_solution(
          << solution.stats.static_precompute_ms << '\n';
   stream << "  candidate_cache_precompute_ms: "
          << solution.stats.candidate_cache_precompute_ms << '\n';
+  stream << "  connection_rule_precompute_ms: "
+         << solution.stats.connection_rule_precompute_ms << '\n';
   stream << "  query_precompute_ms: "
          << solution.stats.query_precompute_ms << '\n';
   stream << "  search_ms: " << solution.stats.search_ms << '\n';
@@ -740,6 +750,12 @@ void write_solution(
   stream << "  acceleration_constraints_enabled: "
          << (solution.stats.acceleration_constraints_enabled ? "true" : "false")
          << '\n';
+  stream << "  dynamics_aware_pibt_enabled: "
+         << (solution.stats.dynamics_aware_pibt_enabled ? "true" : "false")
+         << '\n';
+  stream << "  interval_dominance_enabled: "
+         << (solution.stats.interval_dominance_enabled ? "true" : "false")
+         << '\n';
   stream << "  pivot_anchor_lattice_enabled: "
          << (solution.stats.pivot_anchor_lattice_enabled ? "true" : "false")
          << '\n';
@@ -777,6 +793,24 @@ void write_solution(
   stream << "  pibt_backtracks: " << solution.stats.pibt_backtracks << '\n';
   stream << "  kinematic_dominance_rejects: "
          << solution.stats.kinematic_dominance_rejects << '\n';
+  stream << "  dynamic_prefilter_ms: "
+         << solution.stats.dynamic_prefilter_ms << '\n';
+  stream << "  dynamic_prefilter_calls: "
+         << solution.stats.dynamic_prefilter_calls << '\n';
+  stream << "  dynamic_candidate_evaluations: "
+         << solution.stats.dynamic_candidate_evaluations << '\n';
+  stream << "  geometry_candidate_count: "
+         << solution.stats.geometry_candidate_count << '\n';
+  stream << "  dynamic_candidate_count: "
+         << solution.stats.dynamic_candidate_count << '\n';
+  stream << "  post_pibt_kinematic_rejects: "
+         << solution.stats.post_pibt_kinematic_rejects << '\n';
+  stream << "  dominance_check_count: "
+         << solution.stats.dominance_check_count << '\n';
+  stream << "  cubic_relation_queries: "
+         << solution.stats.cubic_relation_queries << '\n';
+  stream << "  connection_rule_queries: "
+         << solution.stats.connection_rule_queries << '\n';
   stream << "  joint_moves_generated: "
          << solution.stats.joint_moves_generated << '\n';
   stream << "  joint_move_duplicates: "

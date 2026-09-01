@@ -197,6 +197,10 @@ struct SearchOptions {
   bool use_progressive_widening = true;
   std::size_t initial_candidate_width = 1;
   bool use_per_primitive_intervals = true;
+  // Performance ablations. Both preserve acceleration-constraint semantics:
+  // when the PIBT prefilter is off, propagation is performed after PIBT.
+  bool use_dynamics_aware_pibt = true;
+  bool use_interval_dominance = true;
 };
 
 struct PrimitiveConfig {
@@ -322,6 +326,7 @@ struct RuntimeStats {
   // Depends on the current agents/goals.
   double query_precompute_ms = 0.0;
   double candidate_cache_precompute_ms = 0.0;
+  double connection_rule_precompute_ms = 0.0;
 
   // Starts immediately before graph search.
   double search_ms = 0.0;
@@ -348,6 +353,8 @@ struct RuntimeStats {
   bool per_primitive_intervals_enabled = false;
   bool multiple_rotation_amounts_enabled = false;
   bool acceleration_constraints_enabled = false;
+  bool dynamics_aware_pibt_enabled = false;
+  bool interval_dominance_enabled = false;
   bool pivot_anchor_lattice_enabled = false;
   std::size_t active_rotation_amount_count = 1;
   std::string collision_mode = "time_indexed";
@@ -371,6 +378,15 @@ struct RuntimeStats {
   std::uint64_t pibt_kinematic_candidate_rejects = 0;
   std::uint64_t pibt_backtracks = 0;
   std::uint64_t kinematic_dominance_rejects = 0;
+  double dynamic_prefilter_ms = 0.0;
+  std::uint64_t dynamic_prefilter_calls = 0;
+  std::uint64_t dynamic_candidate_evaluations = 0;
+  std::uint64_t geometry_candidate_count = 0;
+  std::uint64_t dynamic_candidate_count = 0;
+  std::uint64_t post_pibt_kinematic_rejects = 0;
+  std::uint64_t dominance_check_count = 0;
+  std::uint64_t cubic_relation_queries = 0;
+  std::uint64_t connection_rule_queries = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;

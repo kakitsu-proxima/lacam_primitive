@@ -44,6 +44,7 @@ struct Primitive {
   double kinematic_max_rate = 0.0;
   double kinematic_max_acceleration =
       std::numeric_limits<double>::infinity();
+  CubicBoundaryRateRelation kinematic_relation;
   bool kinematically_feasible = true;
 };
 

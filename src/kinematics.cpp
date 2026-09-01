@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
-#include <vector>
 
 namespace lacam_primitive {
 
@@ -160,64 +159,78 @@ ScalarInterval propagate(
       twice_average - starts.lower};
 }
 
-ScalarInterval propagate_cubic_boundary_rates(
+namespace {
+
+void clip_rate_relation(
+    CubicBoundaryRateRelation& relation,
+    double a,
+    double b,
+    double c) {
+  if (relation.vertex_count == 0) return;
+  std::array<
+      CubicBoundaryRateRelation::Point,
+      CubicBoundaryRateRelation::kMaximumVertices> result{};
+  std::size_t result_count = 0;
+  const auto value = [&](const CubicBoundaryRateRelation::Point& point) {
+    return a * point.start + b * point.end - c;
+  };
+  const auto append = [&](const CubicBoundaryRateRelation::Point& point) {
+    if (result_count >= result.size()) {
+      throw std::logic_error("cubic boundary-rate polygon is too complex");
+    }
+    result[result_count++] = point;
+  };
+
+  for (std::size_t i = 0; i < relation.vertex_count; ++i) {
+    const auto& current = relation.vertices[i];
+    const auto& next = relation.vertices[(i + 1) % relation.vertex_count];
+    const double current_value = value(current);
+    const double next_value = value(next);
+    const bool current_inside = current_value <= 1e-12;
+    const bool next_inside = next_value <= 1e-12;
+    if (current_inside) append(current);
+    if (current_inside != next_inside) {
+      const double fraction =
+          current_value / (current_value - next_value);
+      append(CubicBoundaryRateRelation::Point{
+          current.start + fraction * (next.start - current.start),
+          current.end + fraction * (next.end - current.end)});
+    }
+  }
+  relation.vertices = result;
+  relation.vertex_count = result_count;
+}
+
+}  // namespace
+
+CubicBoundaryRateRelation make_cubic_boundary_rate_relation(
     double displacement,
     double duration,
     double max_abs_velocity,
-    double max_abs_acceleration,
-    const ScalarInterval& incoming_start_velocity) {
+    double max_abs_acceleration) {
   if (!std::isfinite(displacement) || displacement < 0.0 ||
       !std::isfinite(duration) || duration <= 0.0 ||
       !std::isfinite(max_abs_velocity) || max_abs_velocity <= 0.0 ||
       std::isnan(max_abs_acceleration) || max_abs_acceleration <= 0.0) {
     throw std::invalid_argument("invalid cubic boundary-rate limits");
   }
-  const ScalarInterval starts = intersect(
-      incoming_start_velocity, ScalarInterval{0.0, max_abs_velocity});
-  if (starts.empty()) return ScalarInterval{};
 
-  struct RatePoint {
-    double start = 0.0;
-    double end = 0.0;
-  };
-  std::vector<RatePoint> polygon{
-      {starts.lower, 0.0},
-      {starts.upper, 0.0},
-      {starts.upper, max_abs_velocity},
-      {starts.lower, max_abs_velocity}};
-
-  const auto clip = [&](double a, double b, double c) {
-    std::vector<RatePoint> result;
-    if (polygon.empty()) return result;
-    const auto value = [&](const RatePoint& point) {
-      return a * point.start + b * point.end - c;
-    };
-    for (std::size_t i = 0; i < polygon.size(); ++i) {
-      const RatePoint& current = polygon[i];
-      const RatePoint& next = polygon[(i + 1) % polygon.size()];
-      const double current_value = value(current);
-      const double next_value = value(next);
-      const bool current_inside = current_value <= 1e-12;
-      const bool next_inside = next_value <= 1e-12;
-      if (current_inside) result.push_back(current);
-      if (current_inside != next_inside) {
-        const double fraction =
-            current_value / (current_value - next_value);
-        result.push_back(RatePoint{
-            current.start + fraction * (next.start - current.start),
-            current.end + fraction * (next.end - current.end)});
-      }
-    }
-    return result;
-  };
+  CubicBoundaryRateRelation relation;
+  relation.max_abs_velocity = max_abs_velocity;
+  relation.vertex_count = 4;
+  relation.vertices[0] = {0.0, 0.0};
+  relation.vertices[1] = {max_abs_velocity, 0.0};
+  relation.vertices[2] = {max_abs_velocity, max_abs_velocity};
+  relation.vertices[3] = {0.0, max_abs_velocity};
 
   // The velocity is a quadratic Bezier curve with control values
   // v0, 3*d/T-v0-v1, v1. Keeping all three in [0, vmax] is conservative and
   // guarantees both monotone progress and the continuous-time speed bound.
   const double middle_sum = 3.0 * displacement / duration;
-  polygon = clip(1.0, 1.0, middle_sum);
-  polygon = clip(-1.0, -1.0, max_abs_velocity - middle_sum);
-  if (polygon.empty()) return ScalarInterval{};
+  clip_rate_relation(relation, 1.0, 1.0, middle_sum);
+  clip_rate_relation(
+      relation, -1.0, -1.0, max_abs_velocity - middle_sum);
+  if (!relation.feasible()) return relation;
 
   if (std::isfinite(max_abs_acceleration)) {
     const double inverse_duration = 1.0 / duration;
@@ -236,19 +249,60 @@ ScalarInterval propagate_cubic_boundary_rates(
           max_abs_acceleration - offset}},
     }};
     for (const auto& constraint : constraints) {
-      polygon = clip(constraint[0], constraint[1], constraint[2]);
-      if (polygon.empty()) return ScalarInterval{};
+      clip_rate_relation(
+          relation, constraint[0], constraint[1], constraint[2]);
+      if (!relation.feasible()) return relation;
     }
   }
+
+  return relation;
+}
+
+ScalarInterval CubicBoundaryRateRelation::propagate(
+    const ScalarInterval& incoming_start_velocity) const noexcept {
+  const ScalarInterval starts = intersect(
+      incoming_start_velocity, ScalarInterval{0.0, max_abs_velocity});
+  if (starts.empty() || !feasible()) return ScalarInterval{};
 
   ScalarInterval result{
       std::numeric_limits<double>::infinity(),
       -std::numeric_limits<double>::infinity()};
-  for (const RatePoint& point : polygon) {
-    result.lower = std::min(result.lower, point.end);
-    result.upper = std::max(result.upper, point.end);
+  const auto include_end = [&](double end_rate) {
+    result.lower = std::min(result.lower, end_rate);
+    result.upper = std::max(result.upper, end_rate);
+  };
+  for (std::size_t i = 0; i < vertex_count; ++i) {
+    const Point& current = vertices[i];
+    const Point& next = vertices[(i + 1) % vertex_count];
+    if (current.start >= starts.lower - 1e-12 &&
+        current.start <= starts.upper + 1e-12) {
+      include_end(current.end);
+    }
+    const double delta_start = next.start - current.start;
+    if (std::abs(delta_start) <= 1e-15) continue;
+    for (double boundary : {starts.lower, starts.upper}) {
+      const double fraction = (boundary - current.start) / delta_start;
+      if (fraction >= -1e-12 && fraction <= 1.0 + 1e-12) {
+        include_end(
+            current.end + fraction * (next.end - current.end));
+      }
+    }
   }
   return result;
+}
+
+ScalarInterval propagate_cubic_boundary_rates(
+    double displacement,
+    double duration,
+    double max_abs_velocity,
+    double max_abs_acceleration,
+    const ScalarInterval& incoming_start_velocity) {
+  return make_cubic_boundary_rate_relation(
+             displacement,
+             duration,
+             max_abs_velocity,
+             max_abs_acceleration)
+      .propagate(incoming_start_velocity);
 }
 
 Point2 body_point_acceleration(

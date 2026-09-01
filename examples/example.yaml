@@ -44,8 +44,8 @@ search:
   #objective: sum_of_costs
   objective: makespan
   max_expansions: 200000
-  max_branching: 16
-  alternatives_per_agent: 8
+  max_branching: 8
+  alternatives_per_agent: 4
   random_seed: 7
   use_reverse_bfs_heuristic: true
   diversify_candidates: true
@@ -55,6 +55,8 @@ search:
   use_progressive_widening: true
   initial_candidate_width: 4
   use_per_primitive_intervals: true
+  use_dynamics_aware_pibt: true
+  use_interval_dominance: true
 
 obstacles: []
 # Metric obstacle example:

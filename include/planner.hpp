@@ -101,6 +101,15 @@ struct SearchInstrumentation {
   std::uint64_t pibt_kinematic_candidate_rejects = 0;
   std::uint64_t pibt_backtracks = 0;
   std::uint64_t kinematic_dominance_rejects = 0;
+  double dynamic_prefilter_ms = 0.0;
+  std::uint64_t dynamic_prefilter_calls = 0;
+  std::uint64_t dynamic_candidate_evaluations = 0;
+  std::uint64_t geometry_candidate_count = 0;
+  std::uint64_t dynamic_candidate_count = 0;
+  std::uint64_t post_pibt_kinematic_rejects = 0;
+  std::uint64_t dominance_check_count = 0;
+  std::uint64_t cubic_relation_queries = 0;
+  std::uint64_t connection_rule_queries = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;
@@ -108,6 +117,11 @@ struct SearchInstrumentation {
   std::uint64_t successor_continuations = 0;
   std::uint64_t progressive_widening_stages = 0;
   std::uint64_t max_candidate_width = 0;
+};
+
+struct DynamicCandidateInfo {
+  ScalarInterval outgoing_rates;
+  bool feasible = false;
 };
 
 struct TransitionEntry {
@@ -245,7 +259,8 @@ class PIBT {
       const std::vector<State>& current,
       const std::vector<int>& priority_order,
       const std::vector<std::optional<PrimitiveId>>& forced,
-      const std::vector<std::vector<bool>>& dynamically_allowed,
+      const std::vector<std::vector<DynamicCandidateInfo>>& dynamic_info,
+      const std::vector<std::vector<PrimitiveId>>& dynamic_candidates,
       std::vector<PrimitiveId>& selected,
       std::vector<State>& next);
 
@@ -262,7 +277,8 @@ class PIBT {
       int agent,
       const std::vector<State>& current,
       const std::vector<std::optional<PrimitiveId>>& forced,
-      const std::vector<std::vector<bool>>& dynamically_allowed,
+      const std::vector<std::vector<DynamicCandidateInfo>>& dynamic_info,
+      const std::vector<std::vector<PrimitiveId>>& dynamic_candidates,
       std::vector<PrimitiveId>& selected,
       std::vector<State>& next,
       std::vector<bool>& assigned,
@@ -291,9 +307,10 @@ class Planner {
     std::queue<LowLevelConstraintNode> open;
     std::unordered_set<std::string> seen_constraint_nodes;
     std::unordered_set<std::string> seen_joint_moves;
-    // Per-agent primitive feasibility at this search label's incoming
-    // boundary-rate interval. Empty means acceleration constraints are off.
-    std::vector<std::vector<bool>> dynamically_allowed;
+    // Per-agent outgoing-rate cache and already-filtered geometry ordering.
+    // Empty dynamic_info means the prefilter ablation is disabled.
+    std::vector<std::vector<DynamicCandidateInfo>> dynamic_info;
+    std::vector<std::vector<PrimitiveId>> dynamic_candidates;
     std::size_t candidate_width = 0;
     std::size_t yielded = 0;
     bool initialized = false;
@@ -406,6 +423,19 @@ class Planner {
     std::size_t operator()(const BaseSearchKey& item) const noexcept;
   };
 
+  enum class ConnectionRuleKind : std::uint8_t {
+    kUnconstrained,
+    kZero,
+    kRequiresZeroUnconstrained,
+    kRequiresZero,
+    kScaled,
+  };
+
+  struct ConnectionRule {
+    ConnectionRuleKind kind = ConnectionRuleKind::kRequiresZero;
+    double scale = 0.0;
+  };
+
   // Declared first so construction time also includes PrimitiveTable and CollisionChecker construction.
   std::chrono::steady_clock::time_point construction_start_;
   Problem problem_;
@@ -414,7 +444,8 @@ class Planner {
   TransitionProvider transitions_;
   CandidateProvider candidates_;
   std::mt19937 random_;
-  SearchInstrumentation instrumentation_;
+  mutable SearchInstrumentation instrumentation_;
+  std::vector<ConnectionRule> connection_rules_;
   std::unordered_set<KinematicNoGood, KinematicNoGoodHash>
       kinematic_no_goods_;
   bool kinematic_restart_requested_ = false;
@@ -426,6 +457,7 @@ class Planner {
   double primitive_collision_precompute_ms_ = 0.0;
   double static_precompute_ms_ = 0.0;
   double query_precompute_ms_ = 0.0;
+  double connection_rule_precompute_ms_ = 0.0;
 
   [[nodiscard]] SearchAttempt weighted_search(
       double weight,
@@ -494,6 +526,17 @@ class Planner {
   [[nodiscard]] ScalarInterval propagate_primitive_rates(
       const Primitive& primitive,
       const ScalarInterval& incoming) const;
+
+  void build_connection_rules();
+  [[nodiscard]] std::size_t connection_rule_index(
+      int connection_heading,
+      PrimitiveId previous,
+      PrimitiveId next) const;
+  [[nodiscard]] ScalarInterval connect_boundary_rates(
+      int connection_heading,
+      PrimitiveId previous,
+      PrimitiveId next,
+      const ScalarInterval& outgoing) const;
 
   [[nodiscard]] ScalarInterval local_candidate_end_rates(
       const State& connection_state,

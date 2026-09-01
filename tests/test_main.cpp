@@ -190,6 +190,25 @@ int main() {
       propagate_cubic_boundary_rates(
           0.5, 0.2, 3.0, 19.6, ScalarInterval{0.0, 0.0});
   assert(!cubic_too_fast.contains(0.0));
+  const CubicBoundaryRateRelation precomputed_cubic =
+      make_cubic_boundary_rate_relation(0.5, 0.5, 3.0, 19.6);
+  assert(precomputed_cubic.feasible());
+  assert(precomputed_cubic.vertex_count <=
+         CubicBoundaryRateRelation::kMaximumVertices);
+  for (const ScalarInterval incoming : {
+           ScalarInterval{0.0, 0.0},
+           ScalarInterval{0.0, 1.0},
+           ScalarInterval{0.25, 2.25},
+           ScalarInterval{2.0, 3.0}}) {
+    const ScalarInterval direct = propagate_cubic_boundary_rates(
+        0.5, 0.5, 3.0, 19.6, incoming);
+    const ScalarInterval cached = precomputed_cubic.propagate(incoming);
+    assert(direct.empty() == cached.empty());
+    if (!direct.empty()) {
+      assert(std::abs(direct.lower - cached.lower) < 1e-12);
+      assert(std::abs(direct.upper - cached.upper) < 1e-12);
+    }
+  }
   assert(std::abs(speed_envelope.start_velocity.lower - 0.3) < 1e-12);
   assert(std::abs(speed_envelope.start_velocity.upper - 0.7) < 1e-12);
   assert(std::abs(speed_envelope.end_velocity.lower - 0.3) < 1e-12);
@@ -497,8 +516,31 @@ int main() {
   assert(anchor_three_solution.stats.pivot_anchor_lattice_enabled);
   assert(anchor_three_solution.stats.active_rotation_amount_count == 2);
   assert(anchor_three_solution.stats.acceleration_constraints_enabled);
+  assert(anchor_three_solution.stats.dynamics_aware_pibt_enabled);
+  assert(anchor_three_solution.stats.interval_dominance_enabled);
+  assert(anchor_three_solution.stats.dynamic_prefilter_calls > 0);
+  assert(anchor_three_solution.stats.connection_rule_precompute_ms > 0.0);
+  assert(anchor_three_solution.stats.cubic_relation_queries > 0);
+  assert(anchor_three_solution.stats.connection_rule_queries > 0);
+  assert(anchor_three_solution.stats.dynamic_candidate_evaluations > 0);
+  assert(anchor_three_solution.stats.dynamic_candidate_count <=
+         anchor_three_solution.stats.geometry_candidate_count);
+  assert(anchor_three_solution.stats.post_pibt_kinematic_rejects == 0);
   assert(anchor_three_solution.stats.kinematic_validation_calls >= 1);
   assert(anchor_three_solution.stats.kinematic_validation_failures == 0);
+
+  Problem prefilter_ablation = anchor_three_agents;
+  prefilter_ablation.search.use_dynamics_aware_pibt = false;
+  Planner prefilter_ablation_planner(prefilter_ablation);
+  const Solution prefilter_ablation_solution =
+      prefilter_ablation_planner.solve();
+  validate_solution(prefilter_ablation, prefilter_ablation_solution);
+  assert(!prefilter_ablation_solution.stats.dynamics_aware_pibt_enabled);
+  assert(prefilter_ablation_solution.stats.dynamic_prefilter_calls == 0);
+  assert(prefilter_ablation_solution.stats.post_pibt_kinematic_rejects > 0);
+  assert(std::abs(
+             prefilter_ablation_solution.cost -
+             anchor_three_solution.cost) < 1e-12);
   std::set<int> used_rotation_amounts;
   for (std::size_t i = 0; i < anchor_three_solution.plans.size(); ++i) {
     const AgentPlan& plan = anchor_three_solution.plans[i];

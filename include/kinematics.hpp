@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <limits>
 
 #include "geometry.hpp"
@@ -74,6 +76,31 @@ apply_fixed_pivot_body_acceleration_limit(
 [[nodiscard]] ScalarInterval propagate(
     const ConstantAccelerationEnvelope& envelope,
     const ScalarInterval& incoming_start_velocity) noexcept;
+
+// Convex feasible relation in the (start_rate, end_rate) plane for one cubic
+// Hermite time scaling. It is constructed once per primitive. Runtime
+// propagation only intersects a vertical input strip and projects to end rate.
+struct CubicBoundaryRateRelation {
+  struct Point {
+    double start = 0.0;
+    double end = 0.0;
+  };
+
+  static constexpr std::size_t kMaximumVertices = 16;
+  std::array<Point, kMaximumVertices> vertices{};
+  std::size_t vertex_count = 0;
+  double max_abs_velocity = 0.0;
+
+  [[nodiscard]] bool feasible() const noexcept { return vertex_count != 0; }
+  [[nodiscard]] ScalarInterval propagate(
+      const ScalarInterval& incoming_start_velocity) const noexcept;
+};
+
+[[nodiscard]] CubicBoundaryRateRelation make_cubic_boundary_rate_relation(
+    double displacement,
+    double duration,
+    double max_abs_velocity,
+    double max_abs_acceleration);
 
 // Project the feasible (start_rate, end_rate) polygon of a cubic Hermite
 // progress law onto its end-rate axis. Acceleration is linear within the step,

@@ -279,16 +279,20 @@ void PrimitiveTable::generate_primitives() {
           primitive.kinematic_max_acceleration =
               std::numeric_limits<double>::infinity();
         }
-        if (problem_.primitive_config.use_acceleration_constraints &&
-            primitive.progress_coordinate != ProgressCoordinate::kStationary) {
-          primitive.kinematically_feasible =
-              !propagate_cubic_boundary_rates(
-                   primitive.progress_envelope.displacement,
-                   primitive.progress_envelope.duration,
-                   primitive.kinematic_max_rate,
-                   primitive.kinematic_max_acceleration,
-                   ScalarInterval{0.0, primitive.kinematic_max_rate})
-                   .empty();
+        if (primitive.progress_coordinate !=
+            ProgressCoordinate::kStationary) {
+          primitive.kinematic_relation = make_cubic_boundary_rate_relation(
+              primitive.progress_envelope.displacement,
+              primitive.progress_envelope.duration,
+              primitive.kinematic_max_rate,
+              primitive.kinematic_max_acceleration);
+          if (problem_.primitive_config.use_acceleration_constraints) {
+            primitive.kinematically_feasible =
+                !primitive.kinematic_relation
+                     .propagate(ScalarInterval{
+                         0.0, primitive.kinematic_max_rate})
+                     .empty();
+          }
         }
         primitives_.push_back(std::move(primitive));
 
