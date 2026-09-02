@@ -1,0 +1,59 @@
+{
+  "scenario": "06_two_agent_diagonal",
+  "profile": "staged_w3_4to12",
+  "benchmark_repetition": 5,
+  "benchmark_metrics": {
+    "scenario": "06_two_agent_diagonal",
+    "profile": "staged_w3_4to12",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 4.59922,
+    "first_cost": 6.0,
+    "second_ms": 43.5639,
+    "second_cost": 5.0,
+    "best_50_cost": 5.0,
+    "final_cost": 5.0,
+    "improvement_count": 2,
+    "search_ms": 103.629,
+    "improvements": [
+      {
+        "cost": 6.0,
+        "elapsed_ms": 4.59922
+      },
+      {
+        "cost": 5.0,
+        "elapsed_ms": 43.5639
+      }
+    ],
+    "repetition": 5
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "06_two_agent_diagonal",
+      "profile": "staged_w3_4to12",
+      "benchmark_repetition": 5,
+      "solution_index": 0,
+      "cost": 6.0,
+      "found_at_search_ms": 4.58254,
+      "weight": 3.0,
+      "waypoints_csv": "06_two_agent_diagonal/solution_00_cost_6_waypoints.csv",
+      "samples_csv": "06_two_agent_diagonal/solution_00_cost_6_samples.csv",
+      "smooth_gif": "06_two_agent_diagonal/solution_00_cost_6_smooth.gif",
+      "waypoints_gif": "06_two_agent_diagonal/solution_00_cost_6_waypoints.gif"
+    },
+    {
+      "scenario": "06_two_agent_diagonal",
+      "profile": "staged_w3_4to12",
+      "benchmark_repetition": 5,
+      "solution_index": 1,
+      "cost": 5.0,
+      "found_at_search_ms": 43.557975,
+      "weight": 3.0,
+      "waypoints_csv": "06_two_agent_diagonal/solution_01_cost_5_waypoints.csv",
+      "samples_csv": "06_two_agent_diagonal/solution_01_cost_5_samples.csv",
+      "smooth_gif": "06_two_agent_diagonal/solution_01_cost_5_smooth.gif",
+      "waypoints_gif": "06_two_agent_diagonal/solution_01_cost_5_waypoints.gif"
+    }
+  ]
+}

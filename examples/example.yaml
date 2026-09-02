@@ -36,22 +36,28 @@ primitives:
 search:
   collision_mode: time_indexed
   max_boundary_travel_per_interval_m: 0.005
-  time_limit_ms: 10000
+  # Search-only budget; static/query cache construction is reported separately.
+  time_limit_ms: 50
   anytime: true
   initial_weight: 5.0
   minimum_weight: 1.0
   weight_step: 0.1
-  #objective: sum_of_costs
-  objective: makespan
+  objective: sum_of_costs
+  #objective: makespan
   max_expansions: 200000
-  max_branching: 8
+  # Low-latency profile for this three-agent scenario: one successor was too
+  # narrow, while generating 8 successors spent time on unneeded branches.
+  max_branching: 4
+  # Set, e.g., 3 with a larger max_branching to run a fast incumbent pass
+  # before the wider anytime pass. Zero disables the two-pass policy.
+  initial_solution_max_branching: 0
   alternatives_per_agent: 4
   random_seed: 7
   use_reverse_bfs_heuristic: true
   diversify_candidates: true
   use_aabb_broadphase: true
   use_conflict_cache: true
-  use_lazy_successors: true
+  use_lazy_successors: false
   use_progressive_widening: true
   initial_candidate_width: 4
   use_per_primitive_intervals: true

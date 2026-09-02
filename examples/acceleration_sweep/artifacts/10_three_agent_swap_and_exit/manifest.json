@@ -1,0 +1,76 @@
+{
+  "scenario": "10_three_agent_swap_and_exit",
+  "profile": "narrow_w5_b4",
+  "benchmark_repetition": 4,
+  "benchmark_metrics": {
+    "scenario": "10_three_agent_swap_and_exit",
+    "profile": "narrow_w5_b4",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 9.35767,
+    "first_cost": 8.5,
+    "second_ms": 38.573,
+    "second_cost": 6.5,
+    "best_50_cost": 6.5,
+    "final_cost": 6.0,
+    "improvement_count": 3,
+    "search_ms": 73.0176,
+    "improvements": [
+      {
+        "cost": 8.5,
+        "elapsed_ms": 9.35767
+      },
+      {
+        "cost": 6.5,
+        "elapsed_ms": 38.573
+      },
+      {
+        "cost": 6.0,
+        "elapsed_ms": 56.1258
+      }
+    ],
+    "repetition": 4
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "10_three_agent_swap_and_exit",
+      "profile": "narrow_w5_b4",
+      "benchmark_repetition": 4,
+      "solution_index": 0,
+      "cost": 8.5,
+      "found_at_search_ms": 9.332162,
+      "weight": 5.0,
+      "waypoints_csv": "10_three_agent_swap_and_exit/solution_00_cost_8p5_waypoints.csv",
+      "samples_csv": "10_three_agent_swap_and_exit/solution_00_cost_8p5_samples.csv",
+      "smooth_gif": "10_three_agent_swap_and_exit/solution_00_cost_8p5_smooth.gif",
+      "waypoints_gif": "10_three_agent_swap_and_exit/solution_00_cost_8p5_waypoints.gif"
+    },
+    {
+      "scenario": "10_three_agent_swap_and_exit",
+      "profile": "narrow_w5_b4",
+      "benchmark_repetition": 4,
+      "solution_index": 1,
+      "cost": 6.5,
+      "found_at_search_ms": 38.567042,
+      "weight": 2.3,
+      "waypoints_csv": "10_three_agent_swap_and_exit/solution_01_cost_6p5_waypoints.csv",
+      "samples_csv": "10_three_agent_swap_and_exit/solution_01_cost_6p5_samples.csv",
+      "smooth_gif": "10_three_agent_swap_and_exit/solution_01_cost_6p5_smooth.gif",
+      "waypoints_gif": "10_three_agent_swap_and_exit/solution_01_cost_6p5_waypoints.gif"
+    },
+    {
+      "scenario": "10_three_agent_swap_and_exit",
+      "profile": "narrow_w5_b4",
+      "benchmark_repetition": 4,
+      "solution_index": 2,
+      "cost": 6.0,
+      "found_at_search_ms": 56.121219,
+      "weight": 1.3,
+      "waypoints_csv": "10_three_agent_swap_and_exit/solution_02_cost_6_waypoints.csv",
+      "samples_csv": "10_three_agent_swap_and_exit/solution_02_cost_6_samples.csv",
+      "smooth_gif": "10_three_agent_swap_and_exit/solution_02_cost_6_smooth.gif",
+      "waypoints_gif": "10_three_agent_swap_and_exit/solution_02_cost_6_waypoints.gif"
+    }
+  ]
+}

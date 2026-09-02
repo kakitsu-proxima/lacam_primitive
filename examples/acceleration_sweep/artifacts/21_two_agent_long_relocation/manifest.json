@@ -1,0 +1,59 @@
+{
+  "scenario": "21_two_agent_long_relocation",
+  "profile": "staged_w5_3to8_a3",
+  "benchmark_repetition": 1,
+  "benchmark_metrics": {
+    "scenario": "21_two_agent_long_relocation",
+    "profile": "staged_w5_3to8_a3",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 0.367313,
+    "first_cost": 3.0,
+    "second_ms": 5.7022,
+    "second_cost": 2.5,
+    "best_50_cost": 2.5,
+    "final_cost": 2.5,
+    "improvement_count": 2,
+    "search_ms": 8.27316,
+    "improvements": [
+      {
+        "cost": 3.0,
+        "elapsed_ms": 0.367313
+      },
+      {
+        "cost": 2.5,
+        "elapsed_ms": 5.7022
+      }
+    ],
+    "repetition": 1
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "21_two_agent_long_relocation",
+      "profile": "staged_w5_3to8_a3",
+      "benchmark_repetition": 1,
+      "solution_index": 0,
+      "cost": 3.0,
+      "found_at_search_ms": 0.34898,
+      "weight": 5.0,
+      "waypoints_csv": "21_two_agent_long_relocation/solution_00_cost_3_waypoints.csv",
+      "samples_csv": "21_two_agent_long_relocation/solution_00_cost_3_samples.csv",
+      "smooth_gif": "21_two_agent_long_relocation/solution_00_cost_3_smooth.gif",
+      "waypoints_gif": "21_two_agent_long_relocation/solution_00_cost_3_waypoints.gif"
+    },
+    {
+      "scenario": "21_two_agent_long_relocation",
+      "profile": "staged_w5_3to8_a3",
+      "benchmark_repetition": 1,
+      "solution_index": 1,
+      "cost": 2.5,
+      "found_at_search_ms": 5.69996,
+      "weight": 5.0,
+      "waypoints_csv": "21_two_agent_long_relocation/solution_01_cost_2p5_waypoints.csv",
+      "samples_csv": "21_two_agent_long_relocation/solution_01_cost_2p5_samples.csv",
+      "smooth_gif": "21_two_agent_long_relocation/solution_01_cost_2p5_smooth.gif",
+      "waypoints_gif": "21_two_agent_long_relocation/solution_01_cost_2p5_waypoints.gif"
+    }
+  ]
+}

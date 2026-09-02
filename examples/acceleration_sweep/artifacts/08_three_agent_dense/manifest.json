@@ -1,0 +1,59 @@
+{
+  "scenario": "08_three_agent_dense",
+  "profile": "fast_w10_b3_a3",
+  "benchmark_repetition": 5,
+  "benchmark_metrics": {
+    "scenario": "08_three_agent_dense",
+    "profile": "fast_w10_b3_a3",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 6.25111,
+    "first_cost": 9.0,
+    "second_ms": 10.7974,
+    "second_cost": 7.5,
+    "best_50_cost": 7.5,
+    "final_cost": 7.5,
+    "improvement_count": 2,
+    "search_ms": 24.8027,
+    "improvements": [
+      {
+        "cost": 9.0,
+        "elapsed_ms": 6.25111
+      },
+      {
+        "cost": 7.5,
+        "elapsed_ms": 10.7974
+      }
+    ],
+    "repetition": 5
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "08_three_agent_dense",
+      "profile": "fast_w10_b3_a3",
+      "benchmark_repetition": 5,
+      "solution_index": 0,
+      "cost": 9.0,
+      "found_at_search_ms": 6.228437,
+      "weight": 10.0,
+      "waypoints_csv": "08_three_agent_dense/solution_00_cost_9_waypoints.csv",
+      "samples_csv": "08_three_agent_dense/solution_00_cost_9_samples.csv",
+      "smooth_gif": "08_three_agent_dense/solution_00_cost_9_smooth.gif",
+      "waypoints_gif": "08_three_agent_dense/solution_00_cost_9_waypoints.gif"
+    },
+    {
+      "scenario": "08_three_agent_dense",
+      "profile": "fast_w10_b3_a3",
+      "benchmark_repetition": 5,
+      "solution_index": 1,
+      "cost": 7.5,
+      "found_at_search_ms": 10.795008,
+      "weight": 2.3,
+      "waypoints_csv": "08_three_agent_dense/solution_01_cost_7p5_waypoints.csv",
+      "samples_csv": "08_three_agent_dense/solution_01_cost_7p5_samples.csv",
+      "smooth_gif": "08_three_agent_dense/solution_01_cost_7p5_smooth.gif",
+      "waypoints_gif": "08_three_agent_dense/solution_01_cost_7p5_waypoints.gif"
+    }
+  ]
+}

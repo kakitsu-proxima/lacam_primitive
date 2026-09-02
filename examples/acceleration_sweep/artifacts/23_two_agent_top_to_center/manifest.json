@@ -1,0 +1,76 @@
+{
+  "scenario": "23_two_agent_top_to_center",
+  "profile": "staged_w10_3to4_a3_lazy",
+  "benchmark_repetition": 4,
+  "benchmark_metrics": {
+    "scenario": "23_two_agent_top_to_center",
+    "profile": "staged_w10_3to4_a3_lazy",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 1.9283,
+    "first_cost": 10.0,
+    "second_ms": 4.65575,
+    "second_cost": 9.0,
+    "best_50_cost": 8.0,
+    "final_cost": 8.0,
+    "improvement_count": 3,
+    "search_ms": 103.392,
+    "improvements": [
+      {
+        "cost": 10.0,
+        "elapsed_ms": 1.9283
+      },
+      {
+        "cost": 9.0,
+        "elapsed_ms": 4.65575
+      },
+      {
+        "cost": 8.0,
+        "elapsed_ms": 37.0903
+      }
+    ],
+    "repetition": 4
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "23_two_agent_top_to_center",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 4,
+      "solution_index": 0,
+      "cost": 10.0,
+      "found_at_search_ms": 1.909576,
+      "weight": 10.0,
+      "waypoints_csv": "23_two_agent_top_to_center/solution_00_cost_10_waypoints.csv",
+      "samples_csv": "23_two_agent_top_to_center/solution_00_cost_10_samples.csv",
+      "smooth_gif": "23_two_agent_top_to_center/solution_00_cost_10_smooth.gif",
+      "waypoints_gif": "23_two_agent_top_to_center/solution_00_cost_10_waypoints.gif"
+    },
+    {
+      "scenario": "23_two_agent_top_to_center",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 4,
+      "solution_index": 1,
+      "cost": 9.0,
+      "found_at_search_ms": 4.652883,
+      "weight": 10.0,
+      "waypoints_csv": "23_two_agent_top_to_center/solution_01_cost_9_waypoints.csv",
+      "samples_csv": "23_two_agent_top_to_center/solution_01_cost_9_samples.csv",
+      "smooth_gif": "23_two_agent_top_to_center/solution_01_cost_9_smooth.gif",
+      "waypoints_gif": "23_two_agent_top_to_center/solution_01_cost_9_waypoints.gif"
+    },
+    {
+      "scenario": "23_two_agent_top_to_center",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 4,
+      "solution_index": 2,
+      "cost": 8.0,
+      "found_at_search_ms": 37.08496,
+      "weight": 2.2,
+      "waypoints_csv": "23_two_agent_top_to_center/solution_02_cost_8_waypoints.csv",
+      "samples_csv": "23_two_agent_top_to_center/solution_02_cost_8_samples.csv",
+      "smooth_gif": "23_two_agent_top_to_center/solution_02_cost_8_smooth.gif",
+      "waypoints_gif": "23_two_agent_top_to_center/solution_02_cost_8_waypoints.gif"
+    }
+  ]
+}

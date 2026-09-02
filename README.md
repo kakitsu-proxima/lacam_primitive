@@ -205,6 +205,26 @@ search:
 
 to stop at the first solution.
 
+The three-agent examples use a measured low-latency successor policy:
+
+```yaml
+search:
+  max_branching: 4
+  initial_solution_max_branching: 0
+  alternatives_per_agent: 4
+  use_lazy_successors: false
+```
+
+On the included physical scenario this is substantially faster than either
+one lazy successor at a time or eagerly generating eight successors. This is
+a scenario-dependent search-policy tradeoff, not a generally optimal value;
+re-sweep it when the map, agent count, or primitive library changes.
+
+To obtain a quick incumbent and then restart a wider improvement search under
+the same deadline, set `initial_solution_max_branching` to a positive value
+smaller than `max_branching`. Both passes use the same collision and dynamic
+feasibility checks.
+
 ## Scope
 
 It currently assumes:

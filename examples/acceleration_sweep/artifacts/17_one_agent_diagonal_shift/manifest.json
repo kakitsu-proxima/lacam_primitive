@@ -1,0 +1,42 @@
+{
+  "scenario": "17_one_agent_diagonal_shift",
+  "profile": "staged_w10_3to4_a3_lazy",
+  "benchmark_repetition": 3,
+  "benchmark_metrics": {
+    "scenario": "17_one_agent_diagonal_shift",
+    "profile": "staged_w10_3to4_a3_lazy",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 0.19776,
+    "first_cost": 3.5,
+    "second_ms": null,
+    "second_cost": null,
+    "best_50_cost": 3.5,
+    "final_cost": 3.5,
+    "improvement_count": 1,
+    "search_ms": 1.42932,
+    "improvements": [
+      {
+        "cost": 3.5,
+        "elapsed_ms": 0.19776
+      }
+    ],
+    "repetition": 3
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "17_one_agent_diagonal_shift",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 3,
+      "solution_index": 0,
+      "cost": 3.5,
+      "found_at_search_ms": 0.176386,
+      "weight": 10.0,
+      "waypoints_csv": "17_one_agent_diagonal_shift/solution_00_cost_3p5_waypoints.csv",
+      "samples_csv": "17_one_agent_diagonal_shift/solution_00_cost_3p5_samples.csv",
+      "smooth_gif": "17_one_agent_diagonal_shift/solution_00_cost_3p5_smooth.gif",
+      "waypoints_gif": "17_one_agent_diagonal_shift/solution_00_cost_3p5_waypoints.gif"
+    }
+  ]
+}

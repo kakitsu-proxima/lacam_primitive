@@ -1,0 +1,42 @@
+{
+  "scenario": "16_one_agent_diagonal_goal",
+  "profile": "staged_w5_3to4_a3",
+  "benchmark_repetition": 5,
+  "benchmark_metrics": {
+    "scenario": "16_one_agent_diagonal_goal",
+    "profile": "staged_w5_3to4_a3",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 8.81141,
+    "first_cost": 8.5,
+    "second_ms": null,
+    "second_cost": null,
+    "best_50_cost": 8.5,
+    "final_cost": 8.5,
+    "improvement_count": 1,
+    "search_ms": 9.55664,
+    "improvements": [
+      {
+        "cost": 8.5,
+        "elapsed_ms": 8.81141
+      }
+    ],
+    "repetition": 5
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "16_one_agent_diagonal_goal",
+      "profile": "staged_w5_3to4_a3",
+      "benchmark_repetition": 5,
+      "solution_index": 0,
+      "cost": 8.5,
+      "found_at_search_ms": 8.791586,
+      "weight": 5.0,
+      "waypoints_csv": "16_one_agent_diagonal_goal/solution_00_cost_8p5_waypoints.csv",
+      "samples_csv": "16_one_agent_diagonal_goal/solution_00_cost_8p5_samples.csv",
+      "smooth_gif": "16_one_agent_diagonal_goal/solution_00_cost_8p5_smooth.gif",
+      "waypoints_gif": "16_one_agent_diagonal_goal/solution_00_cost_8p5_waypoints.gif"
+    }
+  ]
+}

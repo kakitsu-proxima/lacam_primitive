@@ -1,0 +1,76 @@
+{
+  "scenario": "19_two_agent_diverge",
+  "profile": "staged_w10_3to8_a3",
+  "benchmark_repetition": 3,
+  "benchmark_metrics": {
+    "scenario": "19_two_agent_diverge",
+    "profile": "staged_w10_3to8_a3",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 0.447257,
+    "first_cost": 4.5,
+    "second_ms": 2.33813,
+    "second_cost": 4.0,
+    "best_50_cost": 3.5,
+    "final_cost": 3.5,
+    "improvement_count": 3,
+    "search_ms": 13.2179,
+    "improvements": [
+      {
+        "cost": 4.5,
+        "elapsed_ms": 0.447257
+      },
+      {
+        "cost": 4.0,
+        "elapsed_ms": 2.33813
+      },
+      {
+        "cost": 3.5,
+        "elapsed_ms": 13.0165
+      }
+    ],
+    "repetition": 3
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "19_two_agent_diverge",
+      "profile": "staged_w10_3to8_a3",
+      "benchmark_repetition": 3,
+      "solution_index": 0,
+      "cost": 4.5,
+      "found_at_search_ms": 0.426279,
+      "weight": 10.0,
+      "waypoints_csv": "19_two_agent_diverge/solution_00_cost_4p5_waypoints.csv",
+      "samples_csv": "19_two_agent_diverge/solution_00_cost_4p5_samples.csv",
+      "smooth_gif": "19_two_agent_diverge/solution_00_cost_4p5_smooth.gif",
+      "waypoints_gif": "19_two_agent_diverge/solution_00_cost_4p5_waypoints.gif"
+    },
+    {
+      "scenario": "19_two_agent_diverge",
+      "profile": "staged_w10_3to8_a3",
+      "benchmark_repetition": 3,
+      "solution_index": 1,
+      "cost": 4.0,
+      "found_at_search_ms": 2.337032,
+      "weight": 10.0,
+      "waypoints_csv": "19_two_agent_diverge/solution_01_cost_4_waypoints.csv",
+      "samples_csv": "19_two_agent_diverge/solution_01_cost_4_samples.csv",
+      "smooth_gif": "19_two_agent_diverge/solution_01_cost_4_smooth.gif",
+      "waypoints_gif": "19_two_agent_diverge/solution_01_cost_4_waypoints.gif"
+    },
+    {
+      "scenario": "19_two_agent_diverge",
+      "profile": "staged_w10_3to8_a3",
+      "benchmark_repetition": 3,
+      "solution_index": 2,
+      "cost": 3.5,
+      "found_at_search_ms": 13.013891,
+      "weight": 1.2,
+      "waypoints_csv": "19_two_agent_diverge/solution_02_cost_3p5_waypoints.csv",
+      "samples_csv": "19_two_agent_diverge/solution_02_cost_3p5_samples.csv",
+      "smooth_gif": "19_two_agent_diverge/solution_02_cost_3p5_smooth.gif",
+      "waypoints_gif": "19_two_agent_diverge/solution_02_cost_3p5_waypoints.gif"
+    }
+  ]
+}

@@ -173,6 +173,9 @@ struct SearchOptions {
   std::string objective = "sum_of_costs";
   std::size_t max_expansions = 200000;
   std::size_t max_branching = 24;
+  // If positive and smaller than max_branching, run one first-solution pass
+  // with this branching cap before the main anytime pass.
+  std::size_t initial_solution_max_branching = 0;
   std::size_t alternatives_per_agent = 5;
   std::uint32_t random_seed = 7;
 
@@ -201,6 +204,7 @@ struct SearchOptions {
   // when the PIBT prefilter is off, propagation is performed after PIBT.
   bool use_dynamics_aware_pibt = true;
   bool use_interval_dominance = true;
+
 };
 
 struct PrimitiveConfig {
@@ -350,6 +354,7 @@ struct RuntimeStats {
   bool lazy_successors_enabled = false;
   bool progressive_widening_enabled = false;
   std::size_t initial_candidate_width = 1;
+  std::size_t initial_solution_max_branching = 0;
   bool per_primitive_intervals_enabled = false;
   bool multiple_rotation_amounts_enabled = false;
   bool acceleration_constraints_enabled = false;

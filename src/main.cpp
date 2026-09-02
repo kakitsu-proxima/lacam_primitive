@@ -15,6 +15,11 @@ void print_usage(const char* executable) {
       << "Usage: " << executable
       << " --input problem.yaml --output solution.yaml\n"
       << "       [--time-limit-ms 100]\n"
+      << "       [--anytime on|off]\n"
+      << "       [--initial-weight 5]\n"
+      << "       [--max-branching 4]\n"
+      << "       [--initial-solution-max-branching 4]\n"
+      << "       [--alternatives-per-agent 4]\n"
       << "       [--transition-cache on|off]\n"
       << "       [--candidate-cache on|off]\n"
       << "       [--ara-star on|off]\n"
@@ -52,6 +57,11 @@ int main(int argc, char** argv) {
     std::string input;
     std::string output;
     double override_time_limit = -1.0;
+    std::optional<bool> override_anytime;
+    std::optional<double> override_initial_weight;
+    std::optional<std::size_t> override_max_branching;
+    std::optional<std::size_t> override_initial_solution_max_branching;
+    std::optional<std::size_t> override_alternatives_per_agent;
     std::optional<bool> override_transition_cache;
     std::optional<bool> override_candidate_cache;
     std::optional<bool> override_ara_star;
@@ -78,6 +88,20 @@ int main(int argc, char** argv) {
         output = argv[++i];
       } else if (argument == "--time-limit-ms" && i + 1 < argc) {
         override_time_limit = std::stod(argv[++i]);
+      } else if (argument == "--anytime" && i + 1 < argc) {
+        override_anytime = parse_on_off(argv[++i], argument);
+      } else if (argument == "--initial-weight" && i + 1 < argc) {
+        override_initial_weight = std::stod(argv[++i]);
+      } else if (argument == "--max-branching" && i + 1 < argc) {
+        override_max_branching =
+            static_cast<std::size_t>(std::stoull(argv[++i]));
+      } else if (argument == "--initial-solution-max-branching" &&
+                 i + 1 < argc) {
+        override_initial_solution_max_branching =
+            static_cast<std::size_t>(std::stoull(argv[++i]));
+      } else if (argument == "--alternatives-per-agent" && i + 1 < argc) {
+        override_alternatives_per_agent =
+            static_cast<std::size_t>(std::stoull(argv[++i]));
       } else if (argument == "--transition-cache" && i + 1 < argc) {
         override_transition_cache =
             parse_on_off(argv[++i], argument);
@@ -134,6 +158,36 @@ int main(int argc, char** argv) {
     lacam_primitive::Problem problem = lacam_primitive::load_problem(input);
     if (override_time_limit > 0.0) {
       problem.search.time_limit_ms = override_time_limit;
+    }
+    if (override_anytime.has_value()) {
+      problem.search.anytime = *override_anytime;
+    }
+    if (override_initial_weight.has_value()) {
+      if (*override_initial_weight < 1.0) {
+        throw std::invalid_argument("--initial-weight must be at least 1");
+      }
+      problem.search.initial_weight = *override_initial_weight;
+      if (problem.search.minimum_weight > problem.search.initial_weight) {
+        problem.search.minimum_weight = problem.search.initial_weight;
+      }
+    }
+    if (override_max_branching.has_value()) {
+      if (*override_max_branching == 0) {
+        throw std::invalid_argument("--max-branching must be positive");
+      }
+      problem.search.max_branching = *override_max_branching;
+    }
+    if (override_initial_solution_max_branching.has_value()) {
+      problem.search.initial_solution_max_branching =
+          *override_initial_solution_max_branching;
+    }
+    if (override_alternatives_per_agent.has_value()) {
+      if (*override_alternatives_per_agent == 0) {
+        throw std::invalid_argument(
+            "--alternatives-per-agent must be positive");
+      }
+      problem.search.alternatives_per_agent =
+          *override_alternatives_per_agent;
     }
     if (override_transition_cache.has_value()) {
       problem.search.use_transition_cache = *override_transition_cache;
@@ -249,6 +303,8 @@ int main(int argc, char** argv) {
         << " widening="
         << on_off(solution.stats.progressive_widening_enabled)
         << " initial_width=" << solution.stats.initial_candidate_width
+        << " initial_solution_branching="
+        << solution.stats.initial_solution_max_branching
         << " per_primitive_intervals="
         << on_off(solution.stats.per_primitive_intervals_enabled)
         << " multiple_rotations="

@@ -1,0 +1,42 @@
+{
+  "scenario": "25_two_agent_cross_lane",
+  "profile": "staged_w10_3to4_a3_lazy",
+  "benchmark_repetition": 4,
+  "benchmark_metrics": {
+    "scenario": "25_two_agent_cross_lane",
+    "profile": "staged_w10_3to4_a3_lazy",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 0.184478,
+    "first_cost": 3.0,
+    "second_ms": null,
+    "second_cost": null,
+    "best_50_cost": 3.0,
+    "final_cost": 3.0,
+    "improvement_count": 1,
+    "search_ms": 1.46359,
+    "improvements": [
+      {
+        "cost": 3.0,
+        "elapsed_ms": 0.184478
+      }
+    ],
+    "repetition": 4
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "25_two_agent_cross_lane",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 4,
+      "solution_index": 0,
+      "cost": 3.0,
+      "found_at_search_ms": 0.167623,
+      "weight": 10.0,
+      "waypoints_csv": "25_two_agent_cross_lane/solution_00_cost_3_waypoints.csv",
+      "samples_csv": "25_two_agent_cross_lane/solution_00_cost_3_samples.csv",
+      "smooth_gif": "25_two_agent_cross_lane/solution_00_cost_3_smooth.gif",
+      "waypoints_gif": "25_two_agent_cross_lane/solution_00_cost_3_waypoints.gif"
+    }
+  ]
+}

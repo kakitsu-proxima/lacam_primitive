@@ -530,6 +530,10 @@ Problem load_problem(const std::string& path) {
     if (const Node* value = optional_child(*search, "max_branching")) {
       problem.search.max_branching = value->as_size();
     }
+    if (const Node* value = optional_child(
+            *search, "initial_solution_max_branching")) {
+      problem.search.initial_solution_max_branching = value->as_size();
+    }
     if (const Node* value =
             optional_child(*search, "alternatives_per_agent")) {
       problem.search.alternatives_per_agent = value->as_size();
@@ -741,6 +745,8 @@ void write_solution(
          << '\n';
   stream << "  initial_candidate_width: "
          << solution.stats.initial_candidate_width << '\n';
+  stream << "  initial_solution_max_branching: "
+         << solution.stats.initial_solution_max_branching << '\n';
   stream << "  per_primitive_intervals_enabled: "
          << (solution.stats.per_primitive_intervals_enabled ? "true" : "false")
          << '\n';

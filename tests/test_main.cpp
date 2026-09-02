@@ -101,6 +101,8 @@ void check_solution(
   assert(solution.stats.conflict_cache_enabled);
   assert(solution.stats.lazy_successors_enabled);
   assert(solution.stats.progressive_widening_enabled);
+  assert(solution.stats.initial_solution_max_branching ==
+         problem.search.initial_solution_max_branching);
   assert(solution.stats.per_primitive_intervals_enabled);
   assert(!solution.stats.multiple_rotation_amounts_enabled);
   assert(!solution.stats.acceleration_constraints_enabled);
@@ -638,12 +640,18 @@ int main() {
   assert(metric_coarse_primitives.total_variant_intervals() <
          global_interval_primitives.total_variant_intervals());
 
-  Planner metric_coarse_planner(metric_coarse);
+  Problem metric_coarse_first_solution = metric_coarse;
+  Problem metric_fine_first_solution = metric_fine;
+  metric_coarse_first_solution.search.time_limit_ms = 5000.0;
+  metric_fine_first_solution.search.time_limit_ms = 5000.0;
+  metric_coarse_first_solution.search.anytime = false;
+  metric_fine_first_solution.search.anytime = false;
+  Planner metric_coarse_planner(metric_coarse_first_solution);
   const Solution metric_coarse_solution = metric_coarse_planner.solve();
-  Planner metric_fine_planner(metric_fine);
+  Planner metric_fine_planner(metric_fine_first_solution);
   const Solution metric_fine_solution = metric_fine_planner.solve();
-  validate_solution(metric_coarse, metric_coarse_solution);
-  validate_solution(metric_fine, metric_fine_solution);
+  validate_solution(metric_coarse_first_solution, metric_coarse_solution);
+  validate_solution(metric_fine_first_solution, metric_fine_solution);
   assert(std::abs(metric_coarse_solution.cost - metric_fine_solution.cost) <
          1e-12);
 
@@ -702,6 +710,14 @@ int main() {
   check_solution(false, true, true);
   check_solution(false, false, false);
   check_solution(true, true, true, "whole_step");
+
+  Problem staged_branching = make_problem(true, true, true);
+  staged_branching.agents.resize(1);
+  staged_branching.search.initial_solution_max_branching = 4;
+  Planner staged_branching_planner(staged_branching);
+  const Solution staged_branching_solution = staged_branching_planner.solve();
+  validate_solution(staged_branching, staged_branching_solution);
+  assert(staged_branching_solution.stats.initial_solution_max_branching == 4);
 
   // Reverse BFS is optional and must preserve solvability and final cost.
   Problem geometric_problem = make_problem(true, true, true);

@@ -2010,6 +2010,7 @@ void Planner::solve_ara_star(
       } else {
         resumed.closed = true;
       }
+
     }
 
     if (!problem_.search.anytime) break;
@@ -2060,7 +2061,26 @@ Solution Planner::solve() {
   solution.objective = problem_.search.objective;
 
   std::uint64_t expanded_nodes = 0;
+  const std::size_t main_max_branching = problem_.search.max_branching;
+  const bool main_anytime = problem_.search.anytime;
+  const bool use_initial_solution_pass =
+      problem_.search.initial_solution_max_branching > 0 &&
+      problem_.search.initial_solution_max_branching < main_max_branching;
+  if (use_initial_solution_pass && !deadline.expired()) {
+    problem_.search.max_branching =
+        problem_.search.initial_solution_max_branching;
+    problem_.search.anytime = false;
+    if (problem_.search.use_ara_star) {
+      solve_ara_star(deadline, solution, expanded_nodes);
+    } else {
+      solve_repeated_weighted(deadline, solution, expanded_nodes);
+    }
+    problem_.search.max_branching = main_max_branching;
+    problem_.search.anytime = main_anytime;
+  }
+
   do {
+    if (solution.success && !main_anytime) break;
     kinematic_restart_requested_ = false;
     if (problem_.search.use_ara_star) {
       solve_ara_star(deadline, solution, expanded_nodes);
@@ -2115,6 +2135,8 @@ Solution Planner::solve() {
       problem_.search.use_progressive_widening;
   solution.stats.initial_candidate_width =
       problem_.search.initial_candidate_width;
+  solution.stats.initial_solution_max_branching =
+      problem_.search.initial_solution_max_branching;
   solution.stats.per_primitive_intervals_enabled =
       problem_.search.use_per_primitive_intervals;
   solution.stats.multiple_rotation_amounts_enabled =

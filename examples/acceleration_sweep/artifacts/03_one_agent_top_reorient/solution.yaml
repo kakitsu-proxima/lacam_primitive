@@ -1,0 +1,271 @@
+success: true
+elapsed_ms: 48.420311
+objective: makespan
+cost: 3
+timing:
+  primitive_collision_precompute_ms: 13.624001
+  transition_cache_precompute_ms: 8.098965
+  static_precompute_ms: 21.824652
+  candidate_cache_precompute_ms: 1.379726
+  connection_rule_precompute_ms: 0.101208
+  query_precompute_ms: 1.38755
+  search_ms: 48.420311
+  first_solution_ms: 0.563966
+  first_solution_cost: 3.5
+  warm_request_ms: 49.807861
+  cold_total_ms: 71.632513
+runtime:
+  transition_cache_enabled: true
+  candidate_cache_enabled: true
+  ara_star_enabled: true
+  reverse_bfs_heuristic_enabled: true
+  candidate_diversification_enabled: true
+  aabb_broadphase_enabled: true
+  conflict_cache_enabled: true
+  lazy_successors_enabled: false
+  progressive_widening_enabled: true
+  initial_candidate_width: 4
+  initial_solution_max_branching: 4
+  per_primitive_intervals_enabled: true
+  multiple_rotation_amounts_enabled: true
+  acceleration_constraints_enabled: true
+  dynamics_aware_pibt_enabled: true
+  interval_dominance_enabled: true
+  pivot_anchor_lattice_enabled: true
+  active_rotation_amount_count: 2
+  collision_mode: time_indexed
+  max_boundary_travel_per_interval_m: 0.005
+  collision_interval_count: 231
+  collision_interval_polygon_count: 15192
+  transition_lookups: 144372
+  transition_cache_hits: 144372
+  transition_on_demand_computations: 0
+  candidate_lookups: 2154
+  candidate_cache_hits: 2154
+  candidate_on_demand_computations: 0
+  expanded_nodes: 718
+  low_level_constraint_nodes: 29934
+  pibt_plan_calls: 29934
+  pibt_assign_calls: 86414
+  pibt_candidate_attempts: 144372
+  pibt_kinematic_candidate_rejects: 0
+  pibt_backtracks: 79144
+  kinematic_dominance_rejects: 0
+  dynamic_prefilter_ms: 1.128529
+  dynamic_prefilter_calls: 718
+  dynamic_candidate_evaluations: 28989
+  geometry_candidate_count: 28989
+  dynamic_candidate_count: 24532
+  post_pibt_kinematic_rejects: 0
+  dominance_check_count: 0
+  cubic_relation_queries: 26859
+  connection_rule_queries: 28934
+  joint_moves_generated: 7415
+  joint_move_duplicates: 12663
+  max_open_size: 157
+  lazy_successor_requests: 7587
+  successor_continuations: 0
+  progressive_widening_stages: 0
+  max_candidate_width: 4
+  conflict_calls: 279861
+  conflict_cache_hits: 276431
+  conflict_cache_canonical_swaps: 137625
+  conflict_cache_entries: 3430
+  whole_step_aabb_tests: 3430
+  whole_step_aabb_rejects: 2181
+  interval_aabb_tests: 91160
+  interval_aabb_rejects: 76736
+  polygon_sat_tests: 14424
+  kinematic_validation_calls: 2
+  kinematic_validation_failures: 0
+  kinematic_search_restarts: 0
+  kinematic_no_good_count: 0
+grid:
+  cell_size: 0.1
+  origin: [0, 0]
+  heading_bins: 8
+  macro_dt: 0.5
+  pose_snap_tolerance_m: 0.02
+  pose_reference:
+    cell_size: 0.1
+    origin: [0, 0]
+    heading_bins: 8
+  bounds_m: [0, 0, 2.6, 1]
+improvements:
+  - elapsed_ms: 0.563966
+    cost: 3.5
+    weight: 3
+    plans:
+      - agent: 0
+        states:
+          - [13, 8, 4]
+          - [12, 8, 4]
+          - [13, 6, 5]
+          - [15, 5, 6]
+          - [10, 5, 6]
+          - [12, 6, 7]
+          - [13, 8, 0]
+          - [13, 8, 0]
+        states_m:
+          - [1.3, 0.8, 4]
+          - [1.2, 0.8, 4]
+          - [1.28786796564, 0.587867965644, 5]
+          - [1.5, 0.5, 6]
+          - [1, 0.5, 6]
+          - [1.21213203436, 0.587867965644, 7]
+          - [1.3, 0.8, 0]
+          - [1.3, 0.8, 0]
+        primitive_ids: [2, 21, 21, 18, 21, 21, 0]
+      - agent: 1
+        states:
+          - [5, 2, 0]
+          - [5, 2, 0]
+          - [5, 2, 0]
+          - [5, 2, 0]
+          - [4, 4, 1]
+          - [2, 5, 2]
+          - [4, 4, 1]
+          - [5, 2, 0]
+        states_m:
+          - [0.5, 0.2, 0]
+          - [0.5, 0.2, 0]
+          - [0.5, 0.2, 0]
+          - [0.5, 0.2, 0]
+          - [0.412132034356, 0.412132034356, 1]
+          - [0.2, 0.5, 2]
+          - [0.412132034356, 0.412132034356, 1]
+          - [0.5, 0.2, 0]
+        primitive_ids: [0, 0, 0, 21, 21, 22, 22]
+      - agent: 2
+        states:
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [21, 2, 4]
+        states_m:
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+        primitive_ids: [0, 0, 0, 0, 0, 0, 0]
+  - elapsed_ms: 42.223709
+    cost: 3
+    weight: 3
+    plans:
+      - agent: 0
+        states:
+          - [13, 8, 4]
+          - [14, 6, 5]
+          - [16, 5, 6]
+          - [11, 5, 6]
+          - [10, 5, 6]
+          - [12, 6, 7]
+          - [13, 8, 0]
+        states_m:
+          - [1.3, 0.8, 4]
+          - [1.38786796564, 0.587867965644, 5]
+          - [1.6, 0.5, 6]
+          - [1.1, 0.5, 6]
+          - [1, 0.5, 6]
+          - [1.21213203436, 0.587867965644, 7]
+          - [1.3, 0.8, 0]
+        primitive_ids: [21, 21, 18, 2, 21, 21]
+      - agent: 1
+        states:
+          - [5, 2, 0]
+          - [5, 2, 0]
+          - [5, 2, 0]
+          - [4, 4, 1]
+          - [2, 5, 2]
+          - [4, 4, 1]
+          - [5, 2, 0]
+        states_m:
+          - [0.5, 0.2, 0]
+          - [0.5, 0.2, 0]
+          - [0.5, 0.2, 0]
+          - [0.412132034356, 0.412132034356, 1]
+          - [0.2, 0.5, 2]
+          - [0.412132034356, 0.412132034356, 1]
+          - [0.5, 0.2, 0]
+        primitive_ids: [0, 0, 21, 21, 22, 22]
+      - agent: 2
+        states:
+          - [21, 2, 4]
+          - [21, 2, 4]
+          - [22, 4, 3]
+          - [24, 5, 2]
+          - [22, 4, 3]
+          - [21, 2, 4]
+          - [21, 2, 4]
+        states_m:
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+          - [2.18786796564, 0.412132034356, 3]
+          - [2.4, 0.5, 2]
+          - [2.18786796564, 0.412132034356, 3]
+          - [2.1, 0.2, 4]
+          - [2.1, 0.2, 4]
+        primitive_ids: [0, 22, 22, 21, 21, 0]
+plans:
+  - agent: 0
+    states:
+      - [13, 8, 4]
+      - [14, 6, 5]
+      - [16, 5, 6]
+      - [11, 5, 6]
+      - [10, 5, 6]
+      - [12, 6, 7]
+      - [13, 8, 0]
+    states_m:
+      - [1.3, 0.8, 4]
+      - [1.38786796564, 0.587867965644, 5]
+      - [1.6, 0.5, 6]
+      - [1.1, 0.5, 6]
+      - [1, 0.5, 6]
+      - [1.21213203436, 0.587867965644, 7]
+      - [1.3, 0.8, 0]
+    primitive_ids: [21, 21, 18, 2, 21, 21]
+  - agent: 1
+    states:
+      - [5, 2, 0]
+      - [5, 2, 0]
+      - [5, 2, 0]
+      - [4, 4, 1]
+      - [2, 5, 2]
+      - [4, 4, 1]
+      - [5, 2, 0]
+    states_m:
+      - [0.5, 0.2, 0]
+      - [0.5, 0.2, 0]
+      - [0.5, 0.2, 0]
+      - [0.412132034356, 0.412132034356, 1]
+      - [0.2, 0.5, 2]
+      - [0.412132034356, 0.412132034356, 1]
+      - [0.5, 0.2, 0]
+    primitive_ids: [0, 0, 21, 21, 22, 22]
+  - agent: 2
+    states:
+      - [21, 2, 4]
+      - [21, 2, 4]
+      - [22, 4, 3]
+      - [24, 5, 2]
+      - [22, 4, 3]
+      - [21, 2, 4]
+      - [21, 2, 4]
+    states_m:
+      - [2.1, 0.2, 4]
+      - [2.1, 0.2, 4]
+      - [2.18786796564, 0.412132034356, 3]
+      - [2.4, 0.5, 2]
+      - [2.18786796564, 0.412132034356, 3]
+      - [2.1, 0.2, 4]
+      - [2.1, 0.2, 4]
+    primitive_ids: [0, 22, 22, 21, 21, 0]

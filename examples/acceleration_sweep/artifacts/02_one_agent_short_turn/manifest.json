@@ -1,0 +1,42 @@
+{
+  "scenario": "02_one_agent_short_turn",
+  "profile": "staged_w10_3to4_a3_lazy",
+  "benchmark_repetition": 1,
+  "benchmark_metrics": {
+    "scenario": "02_one_agent_short_turn",
+    "profile": "staged_w10_3to4_a3_lazy",
+    "returncode": 0,
+    "success": true,
+    "first_ms": 0.103748,
+    "first_cost": 4.0,
+    "second_ms": null,
+    "second_cost": null,
+    "best_50_cost": 4.0,
+    "final_cost": 4.0,
+    "improvement_count": 1,
+    "search_ms": 4.6765,
+    "improvements": [
+      {
+        "cost": 4.0,
+        "elapsed_ms": 0.103748
+      }
+    ],
+    "repetition": 1
+  },
+  "sample_dt_s": 0.05,
+  "solutions": [
+    {
+      "scenario": "02_one_agent_short_turn",
+      "profile": "staged_w10_3to4_a3_lazy",
+      "benchmark_repetition": 1,
+      "solution_index": 0,
+      "cost": 4.0,
+      "found_at_search_ms": 0.085981,
+      "weight": 10.0,
+      "waypoints_csv": "02_one_agent_short_turn/solution_00_cost_4_waypoints.csv",
+      "samples_csv": "02_one_agent_short_turn/solution_00_cost_4_samples.csv",
+      "smooth_gif": "02_one_agent_short_turn/solution_00_cost_4_smooth.gif",
+      "waypoints_gif": "02_one_agent_short_turn/solution_00_cost_4_waypoints.gif"
+    }
+  ]
+}

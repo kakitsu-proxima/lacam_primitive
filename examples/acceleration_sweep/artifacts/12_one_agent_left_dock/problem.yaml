@@ -1,0 +1,59 @@
+grid:
+  cell_size: 0.1
+  origin: [0.0, 0.0]
+  bounds_m: [0.0, 0.0, 2.6, 1.0]
+  heading_bins: 8
+  macro_dt: 0.5
+  pose_reference:
+    cell_size: 0.1
+    origin: [0.0, 0.0]
+    heading_bins: 8
+  pose_snap_tolerance_m: 0.02
+robot:
+  size: [0.825, 0.275]
+  max_linear_velocity: 3.0
+  max_angular_velocity: 8.0
+  max_linear_acceleration: 19.6
+  max_angular_acceleration: 100.0
+  max_body_point_acceleration: 19.6
+  collision_padding: 0.005
+primitives:
+  translation_distances_m: [0.1, 0.2, 0.3, 0.4, 0.5]
+  rotation_bins: [1, 2]
+  use_multiple_rotation_amounts: true
+  use_acceleration_constraints: true
+  rotation_pivot_offsets_m: [-0.3]
+  use_pivot_anchor_lattice: true
+  include_wait: true
+search:
+  collision_mode: time_indexed
+  max_boundary_travel_per_interval_m: 0.005
+  time_limit_ms: 100
+  anytime: true
+  initial_weight: 3.0
+  minimum_weight: 1.0
+  weight_step: 0.1
+  objective: makespan
+  max_expansions: 200000
+  max_branching: 12
+  initial_solution_max_branching: 4
+  alternatives_per_agent: 4
+  random_seed: 7
+  use_reverse_bfs_heuristic: true
+  diversify_candidates: true
+  use_aabb_broadphase: true
+  use_conflict_cache: true
+  use_lazy_successors: false
+  use_progressive_widening: true
+  initial_candidate_width: 4
+  use_per_primitive_intervals: true
+  use_dynamics_aware_pibt: true
+  use_interval_dominance: true
+obstacles: []
+agents:
+  - start_ref: [3, 5, 2]
+    goal_ref: [5, 2, 0]
+  - start_ref: [13, 8, 4]
+    goal_ref: [13, 8, 4]
+  - start_ref: [23, 5, 6]
+    goal_ref: [23, 5, 6]

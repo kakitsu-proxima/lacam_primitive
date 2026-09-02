@@ -25,6 +25,11 @@ def run_planner(
     output_file: str | Path,
     *,
     time_limit_ms: float | None = None,
+    anytime: bool | None = None,
+    initial_weight: float | None = None,
+    max_branching: int | None = None,
+    initial_solution_max_branching: int | None = None,
+    alternatives_per_agent: int | None = None,
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
@@ -61,6 +66,24 @@ def run_planner(
     ]
     if time_limit_ms is not None:
         command.extend(["--time-limit-ms", str(float(time_limit_ms))])
+    if anytime is not None:
+        command.extend(["--anytime", "on" if anytime else "off"])
+    if initial_weight is not None:
+        if initial_weight < 1.0:
+            raise ValueError("initial_weight must be at least 1")
+        command.extend(["--initial-weight", str(float(initial_weight))])
+    for option, value in (
+        ("--max-branching", max_branching),
+        (
+            "--initial-solution-max-branching",
+            initial_solution_max_branching,
+        ),
+        ("--alternatives-per-agent", alternatives_per_agent),
+    ):
+        if value is not None:
+            if value <= 0:
+                raise ValueError(f"{option[2:]} must be positive")
+            command.extend([option, str(int(value))])
     if transition_cache is not None:
         command.extend(["--transition-cache", "on" if transition_cache else "off"])
     if candidate_cache is not None:
@@ -869,6 +892,11 @@ def plan_and_animate(
     output_directory: str | Path,
     *,
     time_limit_ms: float | None = None,
+    anytime: bool | None = None,
+    initial_weight: float | None = None,
+    max_branching: int | None = None,
+    initial_solution_max_branching: int | None = None,
+    alternatives_per_agent: int | None = None,
     transition_cache: bool | None = None,
     candidate_cache: bool | None = None,
     ara_star: bool | None = None,
@@ -902,6 +930,11 @@ def plan_and_animate(
         problem_file,
         solution_file,
         time_limit_ms=time_limit_ms,
+        anytime=anytime,
+        initial_weight=initial_weight,
+        max_branching=max_branching,
+        initial_solution_max_branching=initial_solution_max_branching,
+        alternatives_per_agent=alternatives_per_agent,
         transition_cache=transition_cache,
         candidate_cache=candidate_cache,
         ara_star=ara_star,
