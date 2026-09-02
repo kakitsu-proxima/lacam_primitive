@@ -63,6 +63,9 @@ search:
   use_per_primitive_intervals: true
   use_dynamics_aware_pibt: true
   use_interval_dominance: true
+  # Optional acceleration-aware candidate ordering. Depth may be 2 or 3.
+  use_kinodynamic_lookahead: false
+  kinodynamic_lookahead_depth: 2
 
 obstacles: []
 # Metric obstacle example:

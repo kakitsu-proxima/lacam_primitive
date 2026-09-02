@@ -14,17 +14,6 @@ struct Twist2D {
   double omega = 0.0;    // rad/s
 };
 
-// Closed scalar interval. An interval with lower > upper is empty. Keeping this as a value type makes it suitable for compact reachable-set labels in either LaCAM/PIBT or CBS/A*.
-struct ScalarInterval {
-  double lower = 0.0;
-  double upper = -1.0;
-
-  [[nodiscard]] bool empty() const noexcept { return lower > upper; }
-  [[nodiscard]] bool contains(double value, double tolerance = 1e-9) const noexcept {
-    return !empty() && value >= lower - tolerance && value <= upper + tolerance;
-  }
-};
-
 [[nodiscard]] ScalarInterval intersect(
     const ScalarInterval& left,
     const ScalarInterval& right) noexcept;

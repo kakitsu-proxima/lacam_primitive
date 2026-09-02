@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "primitives.hpp"
 #include "yaml.hpp"
 
 namespace lacam_primitive {
@@ -279,6 +280,18 @@ void validate_problem(const Problem& problem) {
       problem.search.initial_candidate_width == 0) {
     throw std::runtime_error(
         "search branching and candidate widths must be positive");
+  }
+  if (problem.search.kinodynamic_lookahead_depth != 2 &&
+      problem.search.kinodynamic_lookahead_depth != 3) {
+    throw std::runtime_error(
+        "search.kinodynamic_lookahead_depth must be 2 or 3");
+  }
+  if (problem.search.use_kinodynamic_lookahead &&
+      (!problem.primitive_config.use_acceleration_constraints ||
+       !problem.search.use_dynamics_aware_pibt)) {
+    throw std::runtime_error(
+        "kinodynamic lookahead requires acceleration constraints and "
+        "dynamics-aware PIBT");
   }
   if (problem.primitive_config.use_pivot_anchor_lattice &&
       (problem.primitive_config.rotation_pivot_offsets_cells.size() != 1 ||
@@ -601,6 +614,14 @@ Problem load_problem(const std::string& path) {
             *search, "use_interval_dominance")) {
       problem.search.use_interval_dominance = value->as_bool();
     }
+    if (const Node* value = optional_child(
+            *search, "use_kinodynamic_lookahead")) {
+      problem.search.use_kinodynamic_lookahead = value->as_bool();
+    }
+    if (const Node* value = optional_child(
+            *search, "kinodynamic_lookahead_depth")) {
+      problem.search.kinodynamic_lookahead_depth = value->as_size();
+    }
   }
 
   if (const Node* obstacles = optional_child(root, "obstacles")) {
@@ -687,6 +708,20 @@ void write_solution(
             stream << plans[agent].primitive_ids[i];
           }
           stream << "]\n";
+          if (!plans[agent].primitive_start_rates.empty()) {
+            stream << indent << "    primitive_start_rate_ranges:\n";
+            for (const ScalarInterval& interval :
+                 plans[agent].primitive_start_rates) {
+              stream << indent << "      - [" << interval.lower << ", "
+                     << interval.upper << "]\n";
+            }
+            stream << indent << "    primitive_end_rate_ranges:\n";
+            for (const ScalarInterval& interval :
+                 plans[agent].primitive_end_rates) {
+              stream << indent << "      - [" << interval.lower << ", "
+                     << interval.upper << "]\n";
+            }
+          }
         }
       };
 
@@ -706,6 +741,8 @@ void write_solution(
          << solution.stats.candidate_cache_precompute_ms << '\n';
   stream << "  connection_rule_precompute_ms: "
          << solution.stats.connection_rule_precompute_ms << '\n';
+  stream << "  kinodynamic_lookahead_precompute_ms: "
+         << solution.stats.kinodynamic_lookahead_precompute_ms << '\n';
   stream << "  query_precompute_ms: "
          << solution.stats.query_precompute_ms << '\n';
   stream << "  search_ms: " << solution.stats.search_ms << '\n';
@@ -762,6 +799,13 @@ void write_solution(
   stream << "  interval_dominance_enabled: "
          << (solution.stats.interval_dominance_enabled ? "true" : "false")
          << '\n';
+  stream << "  kinodynamic_lookahead_enabled: "
+         << (solution.stats.kinodynamic_lookahead_enabled ? "true" : "false")
+         << '\n';
+  stream << "  kinodynamic_lookahead_depth: "
+         << solution.stats.kinodynamic_lookahead_depth << '\n';
+  stream << "  kinodynamic_lookahead_entry_count: "
+         << solution.stats.kinodynamic_lookahead_entry_count << '\n';
   stream << "  pivot_anchor_lattice_enabled: "
          << (solution.stats.pivot_anchor_lattice_enabled ? "true" : "false")
          << '\n';
@@ -817,6 +861,12 @@ void write_solution(
          << solution.stats.cubic_relation_queries << '\n';
   stream << "  connection_rule_queries: "
          << solution.stats.connection_rule_queries << '\n';
+  stream << "  kinodynamic_lookahead_score_queries: "
+         << solution.stats.kinodynamic_lookahead_score_queries << '\n';
+  stream << "  kinodynamic_lookahead_sequences_evaluated: "
+         << solution.stats.kinodynamic_lookahead_sequences_evaluated << '\n';
+  stream << "  kinodynamic_lookahead_feasible_sequences: "
+         << solution.stats.kinodynamic_lookahead_feasible_sequences << '\n';
   stream << "  joint_moves_generated: "
          << solution.stats.joint_moves_generated << '\n';
   stream << "  joint_move_duplicates: "
@@ -887,6 +937,153 @@ void write_solution(
   }
 
   write_plans(solution.plans, "");
+}
+
+void write_trajectory_csv(
+    const std::string& path,
+    const Problem& problem,
+    const Solution& solution) {
+  if (!solution.success || solution.plans.empty()) {
+    throw std::runtime_error(
+        "cannot write a trajectory CSV without a successful solution");
+  }
+
+  const std::filesystem::path output_path(path);
+  if (!output_path.parent_path().empty()) {
+    std::filesystem::create_directories(output_path.parent_path());
+  }
+  std::ofstream stream(output_path);
+  if (!stream) {
+    throw std::runtime_error("cannot write trajectory CSV: " + path);
+  }
+  stream << std::setprecision(12);
+
+  const PrimitiveTable primitives(problem);
+  const std::size_t step_count =
+      solution.plans.front().primitive_ids.size();
+  for (const AgentPlan& plan : solution.plans) {
+    if (plan.primitive_ids.size() != step_count ||
+        plan.states.size() != step_count + 1) {
+      throw std::runtime_error(
+          "all plans must have one common macro-step count");
+    }
+  }
+
+  const double map_left_m = problem.grid.has_metric_bounds
+      ? problem.grid.min_x_m
+      : problem.grid.origin_x - 0.5 * problem.grid.cell_size;
+  const double map_bottom_m = problem.grid.has_metric_bounds
+      ? problem.grid.min_y_m
+      : problem.grid.origin_y - 0.5 * problem.grid.cell_size;
+  const auto tuple2 = [](double first, double second) {
+    std::ostringstream value;
+    value << std::setprecision(12) << "\"(" << first << "," << second
+          << ")\"";
+    return value.str();
+  };
+  const auto tuple3 = [](double first, double second, double third) {
+    std::ostringstream value;
+    value << std::setprecision(12) << "\"(" << first << "," << second
+          << "," << third << ")\"";
+    return value.str();
+  };
+  const auto scaled_range = [&](const ScalarInterval& interval, double scale) {
+    if (interval.empty() || scale <= 0.0) return tuple2(0.0, 0.0);
+    return tuple2(interval.lower / scale, interval.upper / scale);
+  };
+
+  stream << "time_ms";
+  for (std::size_t agent = 0; agent < solution.plans.size(); ++agent) {
+    const std::string prefix = "agent_" + std::to_string(agent + 1) + "_";
+    stream << ',' << prefix << "position_m"
+           << ',' << prefix << "heading_deg"
+           << ',' << prefix << "beta_start"
+           << ',' << prefix << "beta_end"
+           << ',' << prefix << "sdot_start_range_per_s"
+           << ',' << prefix << "sdot_end_range_per_s";
+  }
+  stream << '\n';
+
+  // One row per boundary. At non-terminal rows beta/rate fields describe the
+  // segment starting at that boundary. The final row is the stopped goal.
+  for (std::size_t boundary = 0; boundary <= step_count; ++boundary) {
+    stream << boundary * problem.grid.macro_dt * 1000.0;
+    for (const AgentPlan& plan : solution.plans) {
+      const State& state = plan.states[boundary];
+      const double x_m = problem.world_x(state) - map_left_m;
+      const double y_m = problem.world_y(state) - map_bottom_m;
+      const double heading_deg =
+          static_cast<double>(state.heading) * 360.0 /
+          static_cast<double>(problem.grid.heading_bins);
+
+      Twist2D beta_start;
+      Twist2D beta_end;
+      ScalarInterval start_rate{0.0, 0.0};
+      ScalarInterval end_rate{0.0, 0.0};
+      double progress_displacement = 0.0;
+      if (boundary < step_count) {
+        const PrimitiveId primitive_id = plan.primitive_ids[boundary];
+        const Primitive& primitive = primitives.primitive(primitive_id);
+        const PrimitiveVariant& variant =
+            primitives.variant(primitive_id, state.heading);
+        progress_displacement = primitive.progress_envelope.displacement;
+        if (progress_displacement > 0.0) {
+          // Use one dimensionless phase s in [0,1] for every segment.
+          // q=(x_m,y_m,theta_deg), hence beta=dq/ds has m/m/degree units.
+          beta_start = Twist2D{
+              variant.start_twist_per_progress_rate.vx *
+                  progress_displacement,
+              variant.start_twist_per_progress_rate.vy *
+                  progress_displacement,
+              variant.start_twist_per_progress_rate.omega *
+                  progress_displacement * 180.0 / kPi};
+          beta_end = Twist2D{
+              variant.end_twist_per_progress_rate.vx *
+                  progress_displacement,
+              variant.end_twist_per_progress_rate.vy *
+                  progress_displacement,
+              variant.end_twist_per_progress_rate.omega *
+                  progress_displacement * 180.0 / kPi};
+          if (plan.primitive_start_rates.size() == step_count &&
+              plan.primitive_end_rates.size() == step_count) {
+            start_rate = plan.primitive_start_rates[boundary];
+            end_rate = plan.primitive_end_rates[boundary];
+          }
+        }
+      }
+
+      stream << ',' << tuple2(x_m, y_m)
+             << ',' << heading_deg
+             << ',' << tuple3(beta_start.vx, beta_start.vy, beta_start.omega)
+             << ',' << tuple3(beta_end.vx, beta_end.vy, beta_end.omega)
+             << ',' << scaled_range(start_rate, progress_displacement)
+             << ',' << scaled_range(end_rate, progress_displacement);
+    }
+    stream << '\n';
+  }
+
+  std::filesystem::path metadata_path = output_path;
+  metadata_path.replace_extension(".metadata.yaml");
+  std::ofstream metadata(metadata_path);
+  if (!metadata) {
+    throw std::runtime_error(
+        "cannot write trajectory metadata: " + metadata_path.string());
+  }
+  metadata << std::setprecision(12)
+           << "interface_schema: trajectory_interface.yaml\n"
+           << "trajectory_csv: " << output_path.filename().string() << '\n'
+           << "map_lower_left_world_m: [" << map_left_m << ", "
+           << map_bottom_m << "]\n"
+           << "reserved_collision_padding_m: "
+           << problem.robot.collision_padding << '\n'
+           << "guaranteed_center_translation_deviation_margin_m: "
+           << problem.robot.collision_padding << '\n'
+           << "margin_bound_is_strict: true\n"
+           << "margin_conditions:\n"
+           << "  - heading and body shape are unchanged\n"
+           << "  - each body follows the planned space-time swept region\n"
+           << "  - lower-level retiming is collision-checked again if it "
+              "changes interval occupancy\n";
 }
 
 }  // namespace lacam_primitive

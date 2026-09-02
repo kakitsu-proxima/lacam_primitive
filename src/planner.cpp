@@ -889,6 +889,164 @@ void Planner::build_connection_rules() {
   }
 }
 
+std::size_t Planner::kinodynamic_lookahead_index(
+    int start_heading,
+    PrimitiveId first,
+    PrimitiveId second,
+    PrimitiveId third) const {
+  const std::size_t primitive_count = primitives_.primitives().size();
+  std::size_t index =
+      (static_cast<std::size_t>(positive_mod(
+           start_heading, problem_.grid.heading_bins)) * primitive_count +
+       static_cast<std::size_t>(first)) * primitive_count +
+      static_cast<std::size_t>(second);
+  if (problem_.search.kinodynamic_lookahead_depth == 3) {
+    index = index * primitive_count + static_cast<std::size_t>(third);
+  }
+  return index;
+}
+
+void Planner::build_kinodynamic_lookahead_table() {
+  kinodynamic_lookahead_table_.clear();
+  kinodynamic_lookahead_entry_count_ = 0;
+  if (!problem_.search.use_kinodynamic_lookahead) return;
+
+  const std::size_t primitive_count = primitives_.primitives().size();
+  std::size_t table_size =
+      static_cast<std::size_t>(problem_.grid.heading_bins) *
+      primitive_count * primitive_count;
+  if (problem_.search.kinodynamic_lookahead_depth == 3) {
+    table_size *= primitive_count;
+  }
+  kinodynamic_lookahead_table_.assign(table_size, std::uint8_t{0});
+
+  for (int heading = 0; heading < problem_.grid.heading_bins; ++heading) {
+    for (const Primitive& first : primitives_.primitives()) {
+      const ScalarInterval broad_first_incoming =
+          first.progress_coordinate == ProgressCoordinate::kStationary
+              ? ScalarInterval{0.0, 0.0}
+              : ScalarInterval{0.0, first.kinematic_max_rate};
+      const ScalarInterval first_outgoing =
+          propagate_primitive_rates(first, broad_first_incoming);
+      if (first_outgoing.empty()) continue;
+
+      const int second_heading = positive_mod(
+          heading + first.d_heading, problem_.grid.heading_bins);
+      for (const Primitive& second : primitives_.primitives()) {
+        const ScalarInterval second_incoming = connect_boundary_rates(
+            second_heading, first.id, second.id, first_outgoing);
+        const ScalarInterval second_outgoing =
+            propagate_primitive_rates(second, second_incoming);
+        if (second_outgoing.empty()) continue;
+
+        if (problem_.search.kinodynamic_lookahead_depth == 2) {
+          kinodynamic_lookahead_table_[kinodynamic_lookahead_index(
+              heading, first.id, second.id)] = 1;
+          ++kinodynamic_lookahead_entry_count_;
+          continue;
+        }
+
+        const int third_heading = positive_mod(
+            second_heading + second.d_heading,
+            problem_.grid.heading_bins);
+        for (const Primitive& third : primitives_.primitives()) {
+          const ScalarInterval third_incoming = connect_boundary_rates(
+              third_heading, second.id, third.id, second_outgoing);
+          if (propagate_primitive_rates(third, third_incoming).empty()) {
+            continue;
+          }
+          kinodynamic_lookahead_table_[kinodynamic_lookahead_index(
+              heading, first.id, second.id, third.id)] = 1;
+          ++kinodynamic_lookahead_entry_count_;
+        }
+      }
+    }
+  }
+}
+
+double Planner::kinodynamic_lookahead_score(
+    std::size_t agent,
+    const State& start,
+    PrimitiveId first,
+    const ScalarInterval& first_outgoing) const {
+  ++instrumentation_.kinodynamic_lookahead_score_queries;
+  const TransitionEntry first_transition = transitions_.lookup(start, first);
+  if (!first_transition.valid) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  double best = std::numeric_limits<double>::infinity();
+  std::vector<PrimitiveId> second_scratch;
+  const std::vector<PrimitiveId>& second_candidates =
+      candidates_.ordered_candidates(
+          agent, first_transition.next, second_scratch);
+  const std::size_t future_width = std::min(
+      problem_.search.alternatives_per_agent, second_candidates.size());
+  for (std::size_t second_index = 0;
+       second_index < future_width; ++second_index) {
+    const PrimitiveId second = second_candidates[second_index];
+    ++instrumentation_.kinodynamic_lookahead_sequences_evaluated;
+    if (problem_.search.kinodynamic_lookahead_depth == 2 &&
+        kinodynamic_lookahead_table_[kinodynamic_lookahead_index(
+            start.heading, first, second)] == 0) continue;
+    const TransitionEntry second_transition = transitions_.lookup(
+        first_transition.next, second);
+    if (!second_transition.valid) continue;
+    const ScalarInterval second_incoming = connect_boundary_rates(
+        first_transition.next.heading, first, second, first_outgoing);
+    const ScalarInterval second_outgoing = propagate_primitive_rates(
+        primitives_.primitive(second), second_incoming);
+    if (!second_transition.valid || second_outgoing.empty()) continue;
+
+    State endpoint = second_transition.next;
+    ScalarInterval endpoint_rates = second_outgoing;
+    if (problem_.search.kinodynamic_lookahead_depth == 3) {
+      std::vector<PrimitiveId> third_scratch;
+      const std::vector<PrimitiveId>& third_candidates =
+          candidates_.ordered_candidates(
+              agent, second_transition.next, third_scratch);
+      const std::size_t third_width = std::min(
+          problem_.search.alternatives_per_agent,
+          third_candidates.size());
+      for (std::size_t third_index = 0;
+           third_index < third_width; ++third_index) {
+        const PrimitiveId third = third_candidates[third_index];
+        ++instrumentation_.kinodynamic_lookahead_sequences_evaluated;
+        if (kinodynamic_lookahead_table_[kinodynamic_lookahead_index(
+                start.heading, first, second, third)] == 0) continue;
+        const TransitionEntry third_transition = transitions_.lookup(
+            second_transition.next, third);
+        if (!third_transition.valid) continue;
+        const ScalarInterval third_incoming = connect_boundary_rates(
+            second_transition.next.heading, second, third, second_outgoing);
+        const ScalarInterval third_outgoing = propagate_primitive_rates(
+            primitives_.primitive(third), third_incoming);
+        if (third_outgoing.empty()) continue;
+        ++instrumentation_.kinodynamic_lookahead_feasible_sequences;
+        double score = candidates_.agent_distance(
+            agent, third_transition.next);
+        if (third_transition.next == problem_.agents[agent].goal &&
+            !third_outgoing.contains(0.0)) {
+          score += 1.0;
+        }
+        best = std::min(best, score);
+      }
+      continue;
+    }
+
+    ++instrumentation_.kinodynamic_lookahead_feasible_sequences;
+    double score = candidates_.agent_distance(agent, endpoint);
+    // A goal pose is not terminal until the boundary rate can contain zero.
+    // Keep such a continuation usable, but rank it behind a stoppable one.
+    if (endpoint == problem_.agents[agent].goal &&
+        !endpoint_rates.contains(0.0)) {
+      score += 1.0;
+    }
+    best = std::min(best, score);
+  }
+  return best;
+}
+
 ScalarInterval Planner::connect_boundary_rates(
     int connection_heading,
     PrimitiveId previous,
@@ -943,10 +1101,27 @@ Planner::Planner(Problem problem)
       problem_.search.objective != "makespan") {
     throw std::invalid_argument("objective must be sum_of_costs or makespan");
   }
+  if (problem_.search.kinodynamic_lookahead_depth != 2 &&
+      problem_.search.kinodynamic_lookahead_depth != 3) {
+    throw std::invalid_argument(
+        "kinodynamic lookahead depth must be 2 or 3");
+  }
+  if (problem_.search.use_kinodynamic_lookahead &&
+      (!problem_.primitive_config.use_acceleration_constraints ||
+       !problem_.search.use_dynamics_aware_pibt)) {
+    throw std::invalid_argument(
+        "kinodynamic lookahead requires acceleration constraints and "
+        "dynamics-aware PIBT");
+  }
 
   const auto connection_start = std::chrono::steady_clock::now();
   build_connection_rules();
   connection_rule_precompute_ms_ = elapsed_ms_since(connection_start);
+
+  const auto lookahead_start = std::chrono::steady_clock::now();
+  build_kinodynamic_lookahead_table();
+  kinodynamic_lookahead_precompute_ms_ =
+      elapsed_ms_since(lookahead_start);
 
   transitions_.build_cache();
   static_precompute_ms_ = elapsed_ms_since(construction_start_);
@@ -982,6 +1157,7 @@ Planner::Planner(Problem problem)
   // Runtime counters should describe only the graph search, not cache building.
   transitions_.reset_runtime_stats();
   candidates_.reset_runtime_stats();
+  instrumentation_ = SearchInstrumentation{};
 }
 
 double Planner::single_agent_steps(
@@ -1110,6 +1286,22 @@ std::optional<Planner::JointMove> Planner::next_joint_move(
           info.outgoing_rates = propagate_primitive_rates(candidate, incoming);
           info.feasible = !info.outgoing_rates.empty();
           if (info.feasible) filtered.push_back(candidate_id);
+        }
+        if (problem_.search.use_kinodynamic_lookahead &&
+            filtered.size() > 1) {
+          std::vector<double> scores(
+              primitives_.primitives().size(),
+              std::numeric_limits<double>::infinity());
+          for (PrimitiveId candidate_id : filtered) {
+            scores[candidate_id] = kinodynamic_lookahead_score(
+                agent, configuration[agent], candidate_id,
+                generator.dynamic_info[agent][candidate_id].outgoing_rates);
+          }
+          std::stable_sort(
+              filtered.begin(), filtered.end(),
+              [&](PrimitiveId left, PrimitiveId right) {
+                return scores[left] < scores[right];
+              });
         }
         instrumentation_.dynamic_candidate_count += filtered.size();
       }
@@ -1518,16 +1710,26 @@ Planner::SearchAttempt Planner::reconstruct(
   result.cost = nodes[static_cast<std::size_t>(goal_index)].g;
   result.states.resize(problem_.agents.size());
   result.primitives.resize(problem_.agents.size());
+  result.boundary_rates.resize(problem_.agents.size());
 
   for (std::size_t agent = 0; agent < problem_.agents.size(); ++agent) {
     result.states[agent].push_back(
         nodes[static_cast<std::size_t>(chain.front())].configuration[agent]);
+    result.boundary_rates[agent].push_back(
+        problem_.primitive_config.use_acceleration_constraints
+            ? nodes[static_cast<std::size_t>(chain.front())]
+                  .boundary_rates[agent]
+            : ScalarInterval{0.0, 0.0});
   }
   for (std::size_t c = 1; c < chain.size(); ++c) {
     const SearchNode& node = nodes[static_cast<std::size_t>(chain[c])];
     for (std::size_t agent = 0; agent < problem_.agents.size(); ++agent) {
       result.primitives[agent].push_back(node.incoming[agent]);
       result.states[agent].push_back(node.configuration[agent]);
+      result.boundary_rates[agent].push_back(
+          problem_.primitive_config.use_acceleration_constraints
+              ? node.boundary_rates[agent]
+              : ScalarInterval{0.0, 0.0});
     }
   }
   return result;
@@ -1747,6 +1949,27 @@ void Planner::publish_solution(
   for (std::size_t i = 0; i < problem_.agents.size(); ++i) {
     plans[i].states = attempt.states[i];
     plans[i].primitive_ids = attempt.primitives[i];
+    if (problem_.primitive_config.use_acceleration_constraints) {
+      plans[i].primitive_start_rates.reserve(attempt.primitives[i].size());
+      plans[i].primitive_end_rates.reserve(attempt.primitives[i].size());
+      for (std::size_t step = 0; step < attempt.primitives[i].size(); ++step) {
+        ScalarInterval start_rate{0.0, 0.0};
+        if (step > 0) {
+          start_rate = connect_boundary_rates(
+              attempt.states[i][step].heading,
+              attempt.primitives[i][step - 1],
+              attempt.primitives[i][step],
+              attempt.boundary_rates[i][step]);
+        }
+        if (primitives_.primitive(attempt.primitives[i][step])
+                .progress_coordinate == ProgressCoordinate::kStationary) {
+          start_rate = ScalarInterval{0.0, 0.0};
+        }
+        plans[i].primitive_start_rates.push_back(start_rate);
+        plans[i].primitive_end_rates.push_back(
+            attempt.boundary_rates[i][step + 1]);
+      }
+    }
   }
   solution.plans = plans;
   solution.improvements.push_back(Improvement{
@@ -2107,6 +2330,8 @@ Solution Planner::solve() {
       candidates_.precompute_ms();
   solution.stats.connection_rule_precompute_ms =
       connection_rule_precompute_ms_;
+  solution.stats.kinodynamic_lookahead_precompute_ms =
+      kinodynamic_lookahead_precompute_ms_;
   solution.stats.query_precompute_ms = query_precompute_ms_;
   solution.stats.search_ms = solution.elapsed_ms;
   if (!solution.improvements.empty()) {
@@ -2147,6 +2372,12 @@ Solution Planner::solve() {
       problem_.search.use_dynamics_aware_pibt;
   solution.stats.interval_dominance_enabled =
       problem_.search.use_interval_dominance;
+  solution.stats.kinodynamic_lookahead_enabled =
+      problem_.search.use_kinodynamic_lookahead;
+  solution.stats.kinodynamic_lookahead_depth =
+      problem_.search.kinodynamic_lookahead_depth;
+  solution.stats.kinodynamic_lookahead_entry_count =
+      kinodynamic_lookahead_entry_count_;
   solution.stats.pivot_anchor_lattice_enabled =
       problem_.primitive_config.use_pivot_anchor_lattice;
   solution.stats.active_rotation_amount_count =
@@ -2197,6 +2428,12 @@ Solution Planner::solve() {
       instrumentation_.cubic_relation_queries;
   solution.stats.connection_rule_queries =
       instrumentation_.connection_rule_queries;
+  solution.stats.kinodynamic_lookahead_score_queries =
+      instrumentation_.kinodynamic_lookahead_score_queries;
+  solution.stats.kinodynamic_lookahead_sequences_evaluated =
+      instrumentation_.kinodynamic_lookahead_sequences_evaluated;
+  solution.stats.kinodynamic_lookahead_feasible_sequences =
+      instrumentation_.kinodynamic_lookahead_feasible_sequences;
   solution.stats.joint_moves_generated =
       instrumentation_.joint_moves_generated;
   solution.stats.joint_move_duplicates =

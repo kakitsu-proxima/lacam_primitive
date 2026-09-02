@@ -204,6 +204,11 @@ struct SearchOptions {
   // when the PIBT prefilter is off, propagation is performed after PIBT.
   bool use_dynamics_aware_pibt = true;
   bool use_interval_dominance = true;
+  // Reorder dynamically feasible PIBT candidates by the best statically
+  // valid, acceleration-feasible primitive continuation. This is deliberately
+  // an ordering hint, not a pruning rule, so completeness is unchanged.
+  bool use_kinodynamic_lookahead = false;
+  std::size_t kinodynamic_lookahead_depth = 2;
 
 };
 
@@ -309,9 +314,29 @@ struct Problem {
 
 using PrimitiveId = std::uint16_t;
 
+// Closed scalar interval used both by planner labels and exported plans.
+// An interval with lower > upper is empty.
+struct ScalarInterval {
+  double lower = 0.0;
+  double upper = -1.0;
+
+  [[nodiscard]] bool empty() const noexcept { return lower > upper; }
+  [[nodiscard]] bool contains(
+      double value, double tolerance = 1e-9) const noexcept {
+    return !empty() && value >= lower - tolerance &&
+           value <= upper + tolerance;
+  }
+};
+
 struct AgentPlan {
   std::vector<State> states;
   std::vector<PrimitiveId> primitive_ids;
+  // Reachable scalar progress-rate intervals in each primitive's own
+  // coordinate. There is one start/end interval per primitive. Keeping the
+  // scalar rate together with dq/ds preserves the coupling between vx, vy
+  // and omega for off-centre rotations.
+  std::vector<ScalarInterval> primitive_start_rates;
+  std::vector<ScalarInterval> primitive_end_rates;
 };
 
 struct Improvement {
@@ -331,6 +356,7 @@ struct RuntimeStats {
   double query_precompute_ms = 0.0;
   double candidate_cache_precompute_ms = 0.0;
   double connection_rule_precompute_ms = 0.0;
+  double kinodynamic_lookahead_precompute_ms = 0.0;
 
   // Starts immediately before graph search.
   double search_ms = 0.0;
@@ -360,6 +386,9 @@ struct RuntimeStats {
   bool acceleration_constraints_enabled = false;
   bool dynamics_aware_pibt_enabled = false;
   bool interval_dominance_enabled = false;
+  bool kinodynamic_lookahead_enabled = false;
+  std::size_t kinodynamic_lookahead_depth = 2;
+  std::size_t kinodynamic_lookahead_entry_count = 0;
   bool pivot_anchor_lattice_enabled = false;
   std::size_t active_rotation_amount_count = 1;
   std::string collision_mode = "time_indexed";
@@ -392,6 +421,9 @@ struct RuntimeStats {
   std::uint64_t dominance_check_count = 0;
   std::uint64_t cubic_relation_queries = 0;
   std::uint64_t connection_rule_queries = 0;
+  std::uint64_t kinodynamic_lookahead_score_queries = 0;
+  std::uint64_t kinodynamic_lookahead_sequences_evaluated = 0;
+  std::uint64_t kinodynamic_lookahead_feasible_sequences = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;

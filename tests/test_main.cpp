@@ -52,6 +52,18 @@ void validate_solution(
   for (const AgentPlan& plan : solution.plans) {
     assert(plan.primitive_ids.size() == steps);
     assert(plan.states.size() == steps + 1);
+    if (problem.primitive_config.use_acceleration_constraints) {
+      assert(plan.primitive_start_rates.size() == steps);
+      assert(plan.primitive_end_rates.size() == steps);
+      if (steps != 0) {
+        assert(plan.primitive_start_rates.front().contains(0.0));
+        assert(plan.primitive_end_rates.back().contains(0.0));
+      }
+      for (std::size_t step = 0; step < steps; ++step) {
+        assert(!plan.primitive_start_rates[step].empty());
+        assert(!plan.primitive_end_rates[step].empty());
+      }
+    }
   }
   for (std::size_t step = 0; step < steps; ++step) {
     for (std::size_t agent = 0; agent < solution.plans.size(); ++agent) {
@@ -530,6 +542,26 @@ int main() {
   assert(anchor_three_solution.stats.post_pibt_kinematic_rejects == 0);
   assert(anchor_three_solution.stats.kinematic_validation_calls >= 1);
   assert(anchor_three_solution.stats.kinematic_validation_failures == 0);
+
+  for (std::size_t lookahead_depth : {std::size_t{2}, std::size_t{3}}) {
+    Problem lookahead_problem = anchor_three_agents;
+    lookahead_problem.search.use_kinodynamic_lookahead = true;
+    lookahead_problem.search.kinodynamic_lookahead_depth = lookahead_depth;
+    lookahead_problem.search.time_limit_ms = 500.0;
+    Planner lookahead_planner(lookahead_problem);
+    const Solution lookahead_solution = lookahead_planner.solve();
+    validate_solution(lookahead_problem, lookahead_solution);
+    assert(lookahead_solution.stats.kinodynamic_lookahead_enabled);
+    assert(lookahead_solution.stats.kinodynamic_lookahead_depth ==
+           lookahead_depth);
+    assert(lookahead_solution.stats.kinodynamic_lookahead_entry_count > 0);
+    assert(lookahead_solution.stats.kinodynamic_lookahead_precompute_ms > 0.0);
+    assert(lookahead_solution.stats.kinodynamic_lookahead_score_queries > 0);
+    assert(lookahead_solution.stats
+               .kinodynamic_lookahead_sequences_evaluated > 0);
+    assert(lookahead_solution.stats
+               .kinodynamic_lookahead_feasible_sequences > 0);
+  }
 
   Problem prefilter_ablation = anchor_three_agents;
   prefilter_ablation.search.use_dynamics_aware_pibt = false;

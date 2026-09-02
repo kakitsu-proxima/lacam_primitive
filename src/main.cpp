@@ -14,6 +14,7 @@ void print_usage(const char* executable) {
   std::cerr
       << "Usage: " << executable
       << " --input problem.yaml --output solution.yaml\n"
+      << "       [--trajectory-csv trajectory.csv]\n"
       << "       [--time-limit-ms 100]\n"
       << "       [--anytime on|off]\n"
       << "       [--initial-weight 5]\n"
@@ -33,6 +34,8 @@ void print_usage(const char* executable) {
       << "       [--per-primitive-intervals on|off]\n"
       << "       [--dynamics-aware-pibt on|off]\n"
       << "       [--interval-dominance on|off]\n"
+      << "       [--kinodynamic-lookahead on|off]\n"
+      << "       [--kinodynamic-lookahead-depth 2|3]\n"
       << "       [--multiple-rotation-amounts on|off]\n"
       << "       [--acceleration-constraints on|off]\n"
       << "       [--collision-mode time_indexed|whole_step]\n"
@@ -56,6 +59,7 @@ int main(int argc, char** argv) {
   try {
     std::string input;
     std::string output;
+    std::string trajectory_csv;
     double override_time_limit = -1.0;
     std::optional<bool> override_anytime;
     std::optional<double> override_initial_weight;
@@ -75,6 +79,8 @@ int main(int argc, char** argv) {
     std::optional<bool> override_per_primitive_intervals;
     std::optional<bool> override_dynamics_aware_pibt;
     std::optional<bool> override_interval_dominance;
+    std::optional<bool> override_kinodynamic_lookahead;
+    std::optional<std::size_t> override_kinodynamic_lookahead_depth;
     std::optional<bool> override_multiple_rotation_amounts;
     std::optional<bool> override_acceleration_constraints;
     std::optional<std::string> override_collision_mode;
@@ -86,6 +92,8 @@ int main(int argc, char** argv) {
         input = argv[++i];
       } else if (argument == "--output" && i + 1 < argc) {
         output = argv[++i];
+      } else if (argument == "--trajectory-csv" && i + 1 < argc) {
+        trajectory_csv = argv[++i];
       } else if (argument == "--time-limit-ms" && i + 1 < argc) {
         override_time_limit = std::stod(argv[++i]);
       } else if (argument == "--anytime" && i + 1 < argc) {
@@ -131,6 +139,12 @@ int main(int argc, char** argv) {
         override_dynamics_aware_pibt = parse_on_off(argv[++i], argument);
       } else if (argument == "--interval-dominance" && i + 1 < argc) {
         override_interval_dominance = parse_on_off(argv[++i], argument);
+      } else if (argument == "--kinodynamic-lookahead" && i + 1 < argc) {
+        override_kinodynamic_lookahead = parse_on_off(argv[++i], argument);
+      } else if (argument == "--kinodynamic-lookahead-depth" &&
+                 i + 1 < argc) {
+        override_kinodynamic_lookahead_depth =
+            static_cast<std::size_t>(std::stoull(argv[++i]));
       } else if (argument == "--multiple-rotation-amounts" && i + 1 < argc) {
         override_multiple_rotation_amounts = parse_on_off(argv[++i], argument);
       } else if (argument == "--acceleration-constraints" && i + 1 < argc) {
@@ -238,6 +252,19 @@ int main(int argc, char** argv) {
       problem.search.use_interval_dominance =
           *override_interval_dominance;
     }
+    if (override_kinodynamic_lookahead.has_value()) {
+      problem.search.use_kinodynamic_lookahead =
+          *override_kinodynamic_lookahead;
+    }
+    if (override_kinodynamic_lookahead_depth.has_value()) {
+      if (*override_kinodynamic_lookahead_depth != 2 &&
+          *override_kinodynamic_lookahead_depth != 3) {
+        throw std::invalid_argument(
+            "--kinodynamic-lookahead-depth must be 2 or 3");
+      }
+      problem.search.kinodynamic_lookahead_depth =
+          *override_kinodynamic_lookahead_depth;
+    }
     if (override_multiple_rotation_amounts.has_value()) {
       problem.primitive_config.use_multiple_rotation_amounts =
           *override_multiple_rotation_amounts;
@@ -266,6 +293,10 @@ int main(int argc, char** argv) {
     lacam_primitive::Planner planner(problem);
     const lacam_primitive::Solution solution = planner.solve();
     lacam_primitive::write_solution(output, problem, solution);
+    if (solution.success && !trajectory_csv.empty()) {
+      lacam_primitive::write_trajectory_csv(
+          trajectory_csv, problem, solution);
+    }
 
     std::cout
         << "precompute static: " << solution.stats.static_precompute_ms
@@ -275,7 +306,9 @@ int main(int argc, char** argv) {
         << ", transition_cache="
         << solution.stats.transition_cache_precompute_ms
         << ", connection_rules="
-        << solution.stats.connection_rule_precompute_ms << ")\n"
+        << solution.stats.connection_rule_precompute_ms
+        << ", lookahead="
+        << solution.stats.kinodynamic_lookahead_precompute_ms << ")\n"
         << "precompute query: " << solution.stats.query_precompute_ms
         << " ms"
         << " (candidate_cache="
@@ -315,6 +348,12 @@ int main(int argc, char** argv) {
         << on_off(solution.stats.dynamics_aware_pibt_enabled)
         << " interval_dominance="
         << on_off(solution.stats.interval_dominance_enabled)
+        << " kinodynamic_lookahead="
+        << on_off(solution.stats.kinodynamic_lookahead_enabled)
+        << " lookahead_depth="
+        << solution.stats.kinodynamic_lookahead_depth
+        << " lookahead_entries="
+        << solution.stats.kinodynamic_lookahead_entry_count
         << " pivot_anchor_lattice="
         << on_off(solution.stats.pivot_anchor_lattice_enabled)
         << " active_rotation_amounts="
@@ -364,7 +403,12 @@ int main(int argc, char** argv) {
         << ", relation_queries="
         << solution.stats.cubic_relation_queries
         << ", connection_queries="
-        << solution.stats.connection_rule_queries << "\n"
+        << solution.stats.connection_rule_queries
+        << ", lookahead_scores="
+        << solution.stats.kinodynamic_lookahead_score_queries
+        << ", lookahead_sequences="
+        << solution.stats.kinodynamic_lookahead_feasible_sequences << "/"
+        << solution.stats.kinodynamic_lookahead_sequences_evaluated << "\n"
         << "collision stats: calls=" << solution.stats.conflict_calls
         << ", cache_hits=" << solution.stats.conflict_cache_hits
         << ", cache_entries=" << solution.stats.conflict_cache_entries

@@ -24,6 +24,7 @@ def run_planner(
     problem_file: str | Path,
     output_file: str | Path,
     *,
+    trajectory_csv: str | Path | None = None,
     time_limit_ms: float | None = None,
     anytime: bool | None = None,
     initial_weight: float | None = None,
@@ -43,6 +44,8 @@ def run_planner(
     per_primitive_intervals: bool | None = None,
     dynamics_aware_pibt: bool | None = None,
     interval_dominance: bool | None = None,
+    kinodynamic_lookahead: bool | None = None,
+    kinodynamic_lookahead_depth: int | None = None,
     multiple_rotation_amounts: bool | None = None,
     acceleration_constraints: bool | None = None,
     collision_mode: str | None = None,
@@ -64,6 +67,10 @@ def run_planner(
         "--output",
         str(output_file),
     ]
+    if trajectory_csv is not None:
+        command.extend(
+            ["--trajectory-csv", str(Path(trajectory_csv).resolve())]
+        )
     if time_limit_ms is not None:
         command.extend(["--time-limit-ms", str(float(time_limit_ms))])
     if anytime is not None:
@@ -100,6 +107,7 @@ def run_planner(
         ("--per-primitive-intervals", per_primitive_intervals),
         ("--dynamics-aware-pibt", dynamics_aware_pibt),
         ("--interval-dominance", interval_dominance),
+        ("--kinodynamic-lookahead", kinodynamic_lookahead),
         ("--multiple-rotation-amounts", multiple_rotation_amounts),
         ("--acceleration-constraints", acceleration_constraints),
     ):
@@ -110,6 +118,15 @@ def run_planner(
             raise ValueError("initial_candidate_width must be positive")
         command.extend(
             ["--initial-candidate-width", str(int(initial_candidate_width))]
+        )
+    if kinodynamic_lookahead_depth is not None:
+        if kinodynamic_lookahead_depth not in {2, 3}:
+            raise ValueError("kinodynamic_lookahead_depth must be 2 or 3")
+        command.extend(
+            [
+                "--kinodynamic-lookahead-depth",
+                str(int(kinodynamic_lookahead_depth)),
+            ]
         )
     if collision_mode is not None:
         if collision_mode not in {"time_indexed", "whole_step"}:
@@ -910,6 +927,8 @@ def plan_and_animate(
     per_primitive_intervals: bool | None = None,
     dynamics_aware_pibt: bool | None = None,
     interval_dominance: bool | None = None,
+    kinodynamic_lookahead: bool | None = None,
+    kinodynamic_lookahead_depth: int | None = None,
     multiple_rotation_amounts: bool | None = None,
     acceleration_constraints: bool | None = None,
     collision_mode: str | None = None,
@@ -925,10 +944,13 @@ def plan_and_animate(
     output_directory = Path(output_directory).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     solution_file = output_directory / "solution.yaml"
+    trajectory_csv_file = output_directory / "trajectory.csv"
+    trajectory_metadata_file = output_directory / "trajectory.metadata.yaml"
     run_planner(
         repo_root,
         problem_file,
         solution_file,
+        trajectory_csv=trajectory_csv_file,
         time_limit_ms=time_limit_ms,
         anytime=anytime,
         initial_weight=initial_weight,
@@ -948,6 +970,8 @@ def plan_and_animate(
         per_primitive_intervals=per_primitive_intervals,
         dynamics_aware_pibt=dynamics_aware_pibt,
         interval_dominance=interval_dominance,
+        kinodynamic_lookahead=kinodynamic_lookahead,
+        kinodynamic_lookahead_depth=kinodynamic_lookahead_depth,
         multiple_rotation_amounts=multiple_rotation_amounts,
         acceleration_constraints=acceleration_constraints,
         collision_mode=collision_mode,
@@ -1013,6 +1037,8 @@ def plan_and_animate(
     )
     return {
         "solution": solution_file,
+        "trajectory_csv": trajectory_csv_file,
+        "trajectory_metadata": trajectory_metadata_file,
         "animation": preferred,
         "animations": animations,
     }

@@ -8,5 +8,9 @@ namespace lacam_primitive {
 
 Problem load_problem(const std::string& path);
 void write_solution(const std::string& path, const Problem& problem, const Solution& solution);
+void write_trajectory_csv(
+    const std::string& path,
+    const Problem& problem,
+    const Solution& solution);
 
 }  // namespace lacam_primitive

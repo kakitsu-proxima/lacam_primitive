@@ -110,6 +110,9 @@ struct SearchInstrumentation {
   std::uint64_t dominance_check_count = 0;
   std::uint64_t cubic_relation_queries = 0;
   std::uint64_t connection_rule_queries = 0;
+  std::uint64_t kinodynamic_lookahead_score_queries = 0;
+  std::uint64_t kinodynamic_lookahead_sequences_evaluated = 0;
+  std::uint64_t kinodynamic_lookahead_feasible_sequences = 0;
   std::uint64_t joint_moves_generated = 0;
   std::uint64_t joint_move_duplicates = 0;
   std::uint64_t max_open_size = 0;
@@ -354,6 +357,9 @@ class Planner {
     double cost = std::numeric_limits<double>::infinity();
     std::vector<std::vector<State>> states;
     std::vector<std::vector<PrimitiveId>> primitives;
+    // Outgoing interval of the primitive immediately before each state.
+    // The first boundary is the stationary initial condition.
+    std::vector<std::vector<ScalarInterval>> boundary_rates;
   };
 
   struct KinematicNoGood {
@@ -446,6 +452,10 @@ class Planner {
   std::mt19937 random_;
   mutable SearchInstrumentation instrumentation_;
   std::vector<ConnectionRule> connection_rules_;
+  // Dense structural-feasibility lookup indexed by (start heading, p, q) or
+  // (start heading, p, q, r). Static obstacles and the current rate interval
+  // remain online checks.
+  std::vector<std::uint8_t> kinodynamic_lookahead_table_;
   std::unordered_set<KinematicNoGood, KinematicNoGoodHash>
       kinematic_no_goods_;
   bool kinematic_restart_requested_ = false;
@@ -458,6 +468,8 @@ class Planner {
   double static_precompute_ms_ = 0.0;
   double query_precompute_ms_ = 0.0;
   double connection_rule_precompute_ms_ = 0.0;
+  double kinodynamic_lookahead_precompute_ms_ = 0.0;
+  std::size_t kinodynamic_lookahead_entry_count_ = 0;
 
   [[nodiscard]] SearchAttempt weighted_search(
       double weight,
@@ -528,6 +540,15 @@ class Planner {
       const ScalarInterval& incoming) const;
 
   void build_connection_rules();
+  void build_kinodynamic_lookahead_table();
+  [[nodiscard]] std::size_t kinodynamic_lookahead_index(
+      int start_heading, PrimitiveId first, PrimitiveId second,
+      PrimitiveId third = 0) const;
+  [[nodiscard]] double kinodynamic_lookahead_score(
+      std::size_t agent,
+      const State& start,
+      PrimitiveId first,
+      const ScalarInterval& first_outgoing) const;
   [[nodiscard]] std::size_t connection_rule_index(
       int connection_heading,
       PrimitiveId previous,
