@@ -1964,6 +1964,21 @@ void Planner::publish_solution(
         if (primitives_.primitive(attempt.primitives[i][step])
                 .progress_coordinate == ProgressCoordinate::kStationary) {
           start_rate = ScalarInterval{0.0, 0.0};
+        } else {
+          const CubicBoundaryRateRelation& relation =
+              primitives_.primitive(attempt.primitives[i][step])
+                  .kinematic_relation;
+          ScalarInterval feasible_starts{
+              std::numeric_limits<double>::infinity(),
+              -std::numeric_limits<double>::infinity()};
+          for (std::size_t vertex = 0;
+               vertex < relation.vertex_count; ++vertex) {
+            feasible_starts.lower = std::min(
+                feasible_starts.lower, relation.vertices[vertex].start);
+            feasible_starts.upper = std::max(
+                feasible_starts.upper, relation.vertices[vertex].start);
+          }
+          start_rate = intersect(start_rate, feasible_starts);
         }
         plans[i].primitive_start_rates.push_back(start_rate);
         plans[i].primitive_end_rates.push_back(

@@ -987,25 +987,23 @@ void write_trajectory_csv(
           << "," << third << ")\"";
     return value.str();
   };
-  const auto scaled_range = [&](const ScalarInterval& interval, double scale) {
-    if (interval.empty() || scale <= 0.0) return tuple2(0.0, 0.0);
-    return tuple2(interval.lower / scale, interval.upper / scale);
-  };
 
   stream << "time_ms";
   for (std::size_t agent = 0; agent < solution.plans.size(); ++agent) {
     const std::string prefix = "agent_" + std::to_string(agent + 1) + "_";
     stream << ',' << prefix << "position_m"
            << ',' << prefix << "heading_deg"
-           << ',' << prefix << "beta_start"
-           << ',' << prefix << "beta_end"
-           << ',' << prefix << "sdot_start_range_per_s"
-           << ',' << prefix << "sdot_end_range_per_s";
+           << ',' << prefix << "motion_type"
+           << ',' << prefix << "d"
+           << ',' << prefix << "beta"
+           << ',' << prefix << "sdot_range";
   }
   stream << '\n';
 
-  // One row per boundary. At non-terminal rows beta/rate fields describe the
-  // segment starting at that boundary. The final row is the stopped goal.
+  // Each row is one shared boundary. For a non-terminal boundary, beta and
+  // sdot are expressed in the progress coordinate of the segment which starts
+  // at this row. connect_boundary_rates has already mapped the preceding
+  // segment's end-rate set into this same coordinate.
   for (std::size_t boundary = 0; boundary <= step_count; ++boundary) {
     stream << boundary * problem.grid.macro_dt * 1000.0;
     for (const AgentPlan& plan : solution.plans) {
@@ -1016,48 +1014,43 @@ void write_trajectory_csv(
           static_cast<double>(state.heading) * 360.0 /
           static_cast<double>(problem.grid.heading_bins);
 
-      Twist2D beta_start;
-      Twist2D beta_end;
-      ScalarInterval start_rate{0.0, 0.0};
-      ScalarInterval end_rate{0.0, 0.0};
-      double progress_displacement = 0.0;
+      Twist2D beta;
+      ScalarInterval rate{0.0, 0.0};
+      const char* motion_type = "wait";
+      double displacement = 0.0;
       if (boundary < step_count) {
         const PrimitiveId primitive_id = plan.primitive_ids[boundary];
         const Primitive& primitive = primitives.primitive(primitive_id);
         const PrimitiveVariant& variant =
             primitives.variant(primitive_id, state.heading);
-        progress_displacement = primitive.progress_envelope.displacement;
-        if (progress_displacement > 0.0) {
-          // Use one dimensionless phase s in [0,1] for every segment.
-          // q=(x_m,y_m,theta_deg), hence beta=dq/ds has m/m/degree units.
-          beta_start = Twist2D{
-              variant.start_twist_per_progress_rate.vx *
-                  progress_displacement,
-              variant.start_twist_per_progress_rate.vy *
-                  progress_displacement,
-              variant.start_twist_per_progress_rate.omega *
-                  progress_displacement * 180.0 / kPi};
-          beta_end = Twist2D{
-              variant.end_twist_per_progress_rate.vx *
-                  progress_displacement,
-              variant.end_twist_per_progress_rate.vy *
-                  progress_displacement,
-              variant.end_twist_per_progress_rate.omega *
-                  progress_displacement * 180.0 / kPi};
-          if (plan.primitive_start_rates.size() == step_count &&
-              plan.primitive_end_rates.size() == step_count) {
-            start_rate = plan.primitive_start_rates[boundary];
-            end_rate = plan.primitive_end_rates[boundary];
-          }
+        beta = Twist2D{
+            variant.start_twist_per_progress_rate.vx,
+            variant.start_twist_per_progress_rate.vy,
+            variant.start_twist_per_progress_rate.omega};
+        displacement = primitive.progress_envelope.displacement;
+        if (primitive.progress_coordinate ==
+            ProgressCoordinate::kTranslationMetres) {
+          motion_type = "translation";
+        } else if (primitive.progress_coordinate ==
+                   ProgressCoordinate::kRotationRadians) {
+          motion_type = "rotation";
+        }
+        if (plan.primitive_start_rates.size() == step_count) {
+          rate = plan.primitive_start_rates[boundary];
+        }
+        if (primitive.progress_coordinate == ProgressCoordinate::kStationary) {
+          beta = Twist2D{};
+          rate = ScalarInterval{0.0, 0.0};
+          displacement = 0.0;
         }
       }
 
       stream << ',' << tuple2(x_m, y_m)
              << ',' << heading_deg
-             << ',' << tuple3(beta_start.vx, beta_start.vy, beta_start.omega)
-             << ',' << tuple3(beta_end.vx, beta_end.vy, beta_end.omega)
-             << ',' << scaled_range(start_rate, progress_displacement)
-             << ',' << scaled_range(end_rate, progress_displacement);
+             << ',' << motion_type
+             << ',' << displacement
+             << ',' << tuple3(beta.vx, beta.vy, beta.omega)
+             << ',' << tuple2(rate.lower, rate.upper);
     }
     stream << '\n';
   }
